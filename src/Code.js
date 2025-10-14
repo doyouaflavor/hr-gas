@@ -138,14 +138,28 @@ function extractOvertimeData(sheet, monthName, employeeId) {
     
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      const date = row[0];
-      const overtimeHours = parseFloat(row[4]) || 0;
-      const overtimeType = row[5] || '';
-      const note = row[6] || '';
+      const date = row[1];
+      const dayOfWeek = row[2];
+      const dayType = row[3] || '';
+      const overtimeHours = parseFloat(row[11]) || 0;
+      const note = row[12] || '';
       
       if (date && overtimeHours > 0) {
         const dateObj = new Date(date);
         if (isValidDate(dateObj)) {
+          let overtimeType = '';
+          if (dayType.includes('例假日')) {
+            overtimeType = '例假日';
+          } else if (dayType.includes('休息日') || dayOfWeek === '6' || dayOfWeek === '7') {
+            overtimeType = '假日';
+          } else if (dayType.includes('上班日加班')) {
+            overtimeType = '上班日加班';
+          } else if (dayType.includes('上班日')) {
+            overtimeType = '上班日';
+          } else {
+            overtimeType = '平日';
+          }
+          
           overtimeRecords.push({
             employeeId: employeeId,
             date: formatDate(dateObj),
@@ -153,7 +167,7 @@ function extractOvertimeData(sheet, monthName, employeeId) {
             type: overtimeType,
             note: note,
             sourceMonth: monthName,
-            dayOfWeek: getDayOfWeek(dateObj)
+            dayOfWeek: typeof dayOfWeek === 'number' ? getDayOfWeek(dateObj) : dayOfWeek
           });
         }
       }
