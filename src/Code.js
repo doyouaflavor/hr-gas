@@ -450,8 +450,8 @@ function verifyRecordInEmployeeFile(fileId, sourceMonth, date) {
     
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      const rowDate = formatDate(new Date(row[0]));
-      if (rowDate === date && parseFloat(row[4]) > 0) {
+      const rowDate = formatDate(new Date(row[1])); // 日期在第2欄
+      if (rowDate === date && parseFloat(row[11]) > 0) { // 加班時數在第12欄
         return true;
       }
     }
