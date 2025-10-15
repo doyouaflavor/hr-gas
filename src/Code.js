@@ -229,6 +229,9 @@ function validateOvertimeRecords() {
         if (!found) {
           markRecordError(sheet, i + 1, '員工檔案中找不到對應資料');
           errorCount++;
+        } else {
+          // 驗證成功時清空錯誤訊息
+          markRecordError(sheet, i + 1, '');
         }
       } catch (error) {
         markRecordError(sheet, i + 1, `驗證失敗: ${error.message}`);
@@ -377,7 +380,9 @@ function getExistingOvertimeIds(date, employeeId) {
   
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
-    if (row[1] === employeeId && row[3] === date) {
+    // 確保日期格式一致的比對
+    const existingDate = typeof row[3] === 'string' ? row[3] : formatDate(new Date(row[3]));
+    if (row[1] === employeeId && existingDate === date) {
       ids.push(row[0]);
     }
   }
@@ -435,7 +440,9 @@ function overtimeRecordExists(employeeId, date) {
   
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
-    if (row[1] === employeeId && row[3] === date) {
+    // 確保日期格式一致的比對
+    const existingDate = typeof row[3] === 'string' ? row[3] : formatDate(new Date(row[3]));
+    if (row[1] === employeeId && existingDate === date) {
       return true;
     }
   }
@@ -445,13 +452,39 @@ function overtimeRecordExists(employeeId, date) {
 
 function verifyRecordInEmployeeFile(fileId, sourceMonth, date) {
   try {
+    // 將傳入的 date 統一轉換為字串格式
+    let targetDate;
+    if (date instanceof Date) {
+      targetDate = formatDate(date);
+    } else if (typeof date === 'string') {
+      targetDate = date;
+    } else {
+      return false; // 無效的日期格式
+    }
+    
     const sheet = getEmployeeSheet(fileId, sourceMonth);
     const data = sheet.getDataRange().getValues();
     
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      const rowDate = formatDate(new Date(row[1])); // 日期在第2欄
-      if (rowDate === date && parseFloat(row[11]) > 0) { // 加班時數在第12欄
+      let rowDate;
+      
+      // 處理不同的日期格式
+      if (row[1] instanceof Date) {
+        rowDate = formatDate(row[1]);
+      } else if (typeof row[1] === 'string') {
+        // 如果是字串，嘗試解析
+        const parsedDate = new Date(row[1]);
+        if (isValidDate(parsedDate)) {
+          rowDate = formatDate(parsedDate);
+        } else {
+          rowDate = row[1]; // 保持原始字串格式
+        }
+      } else {
+        continue; // 跳過無效的日期格式
+      }
+      
+      if (rowDate === targetDate && parseFloat(row[11]) > 0) { // 加班時數在第12欄
         return true;
       }
     }
