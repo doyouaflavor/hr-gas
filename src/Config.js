@@ -8,5 +8,5 @@ const CONFIG = {
   },
   
   // 主控制台試算表 ID
-  MASTER_SHEET_ID: '1fTQ3AZ93yP_q7oCncMASozScIJ36NlJwgc3vplr0nJI',
+  MASTER_SHEET_ID: '',
 };

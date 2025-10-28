@@ -22,19 +22,28 @@ cp .env.example .env
 ```env
 GOOGLE_SERVICE_ACCOUNT_EMAIL=your_service_account@your_project.iam.gserviceaccount.com
 GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nyour_private_key_here\n-----END PRIVATE KEY-----"
-TEST_SHEET_ID=1fTQ3AZ93yP_q7oCncMASozScIJ36NlJwgc3vplr0nJI
+# 主控台試算表 ID（包含員工清單、加班記錄總表、補休申請總表）
+TEST_MASTER_SHEET_ID=your_master_sheet_id_here
+# 員工個人試算表 ID（包含各月份分頁）
+TEST_EMPLOYEE_SHEET_ID=your_employee_sheet_id_here
 ```
 
 #### 方法二：Service Account JSON 檔案
 ```env
 GOOGLE_SERVICE_ACCOUNT_PATH=/path/to/your/service-account.json
-TEST_SHEET_ID=1fTQ3AZ93yP_q7oCncMASozScIJ36NlJwgc3vplr0nJI
+# 主控台試算表 ID（包含員工清單、加班記錄總表、補休申請總表）
+TEST_MASTER_SHEET_ID=your_master_sheet_id_here
+# 員工個人試算表 ID（包含各月份分頁）
+TEST_EMPLOYEE_SHEET_ID=your_employee_sheet_id_here
 ```
 
 #### 方法三：API Key（僅適用於公開 Sheets）
 ```env
 GOOGLE_SHEETS_API_KEY=your_api_key_here
-TEST_SHEET_ID=1fTQ3AZ93yP_q7oCncMASozScIJ36NlJwgc3vplr0nJI
+# 主控台試算表 ID（包含員工清單、加班記錄總表、補休申請總表）
+TEST_MASTER_SHEET_ID=your_master_sheet_id_here
+# 員工個人試算表 ID（包含各月份分頁）
+TEST_EMPLOYEE_SHEET_ID=your_employee_sheet_id_here
 ```
 
 ### 3. 執行測試
@@ -172,5 +181,6 @@ npm test -- --verbose
 env:
   GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
   GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
-  TEST_SHEET_ID: ${{ secrets.TEST_SHEET_ID }}
+  TEST_MASTER_SHEET_ID: ${{ secrets.TEST_MASTER_SHEET_ID }}
+  TEST_EMPLOYEE_SHEET_ID: ${{ secrets.TEST_EMPLOYEE_SHEET_ID }}
 ```

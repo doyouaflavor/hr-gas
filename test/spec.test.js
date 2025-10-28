@@ -2,7 +2,8 @@ const SheetsReader = require('./helpers/sheetsReader');
 
 describe('HR 管理系統規格測試 (依據 spec.md)', () => {
   let reader;
-  const testSheetId = global.testConfig.sheetId;
+  const masterSheetId = global.testConfig.masterSheetId;
+  const employeeSheetId = global.testConfig.employeeSheetId;
 
   beforeAll(async () => {
     reader = new SheetsReader();
@@ -11,14 +12,14 @@ describe('HR 管理系統規格測試 (依據 spec.md)', () => {
 
   describe('資料表結構驗證', () => {
     test('應該包含 spec.md 定義的必要工作表', async () => {
-      const sheets = await reader.getSheetNames(testSheetId);
+      const sheets = await reader.getSheetNames(masterSheetId);
       const sheetNames = sheets.map(s => s.title);
       
       // spec.md 定義的必要工作表
       const requiredSheets = [
         '員工清單',
-        '總加班記錄', 
-        '總補修記錄',
+        '加班記錄總表', 
+        '補休申請總表',
         '執行紀錄'
       ];
       
@@ -30,7 +31,7 @@ describe('HR 管理系統規格測試 (依據 spec.md)', () => {
     });
 
     test('員工清單應該有正確的欄位結構', async () => {
-      const data = await reader.getSheetData(testSheetId, '員工清單!A1:E1');
+      const data = await reader.getSheetData(masterSheetId, '員工清單!A1:E1');
       
       if (data.length > 0) {
         const headers = data[0];
@@ -44,15 +45,15 @@ describe('HR 管理系統規格測試 (依據 spec.md)', () => {
       }
     });
 
-    test('總加班記錄應該有正確的欄位結構', async () => {
-      const data = await reader.getSheetData(testSheetId, '總加班記錄!A1:M1');
+    test('加班記錄總表應該有正確的欄位結構', async () => {
+      const data = await reader.getSheetData(masterSheetId, '加班記錄總表!A1:M1');
       
       if (data.length > 0) {
         const headers = data[0];
         const expectedFields = [
           '加班編號', '員工編號', '姓名', '日期', '星期', 
           '加班類型', '加班時數', '已使用補休', '剩餘可補休', 
-          '狀態', '資料來源月份', '用掉補修編號', '錯誤提示'
+          '狀態', '資料來源月份', '用掉補休編號', '錯誤提示'
         ];
         
         expectedFields.forEach((field, index) => {
@@ -61,12 +62,12 @@ describe('HR 管理系統規格測試 (依據 spec.md)', () => {
           }
         });
         
-        console.log('⏰ 總加班記錄欄位:', headers);
+        console.log('⏰ 加班記錄總表欄位:', headers);
       }
     });
 
-    test('總補修記錄應該有正確的欄位結構', async () => {
-      const data = await reader.getSheetData(testSheetId, '總補修記錄!A1:J1');
+    test('補休申請總表應該有正確的欄位結構', async () => {
+      const data = await reader.getSheetData(masterSheetId, '補休申請總表!A1:J1');
       
       if (data.length > 0) {
         const headers = data[0];
@@ -81,7 +82,7 @@ describe('HR 管理系統規格測試 (依據 spec.md)', () => {
           }
         });
         
-        console.log('🏖️ 總補修記錄欄位:', headers);
+        console.log('🏖️ 補休申請總表欄位:', headers);
       }
     });
   });
@@ -107,7 +108,7 @@ describe('HR 管理系統規格測試 (依據 spec.md)', () => {
 
   describe('月份分頁掃描測試', () => {
     test('應該能正確識別月份分頁格式', async () => {
-      const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+      const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
       
       monthlySheets.forEach(sheet => {
         // 檢查月份格式: "8月", "9月" 等
@@ -120,7 +121,7 @@ describe('HR 管理系統規格測試 (依據 spec.md)', () => {
     });
 
     test('月份分頁應該按月份順序排列', async () => {
-      const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+      const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
       
       for (let i = 1; i < monthlySheets.length; i++) {
         expect(monthlySheets[i].month).toBeGreaterThanOrEqual(monthlySheets[i-1].month);
@@ -132,14 +133,14 @@ describe('HR 管理系統規格測試 (依據 spec.md)', () => {
 
   describe('加班資料提取測試', () => {
     test('應該能從月份分頁提取加班資料', async () => {
-      const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+      const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
       
       if (monthlySheets.length > 0) {
         const firstSheet = monthlySheets[0];
         const testEmployeeId = 'E001';
         
         const overtimeData = await reader.extractOvertimeData(
-          testSheetId,
+          employeeSheetId,
           firstSheet.title,
           testEmployeeId
         );

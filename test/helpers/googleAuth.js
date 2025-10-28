@@ -57,7 +57,7 @@ class GoogleSheetsAuth {
 
     try {
       // 測試連接 - 嘗試取得 Sheet 的基本資訊
-      const testSheetId = process.env.TEST_SHEET_ID;
+      const testSheetId = process.env.TEST_MASTER_SHEET_ID || process.env.TEST_SHEET_ID;
       const response = await this.sheets.spreadsheets.get({
         spreadsheetId: testSheetId
       });

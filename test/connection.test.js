@@ -20,7 +20,7 @@ describe('Google Sheets 連接測試', () => {
   });
 
   test('應該能取得所有工作表名稱', async () => {
-    const sheets = await reader.getSheetNames(global.testConfig.sheetId);
+    const sheets = await reader.getSheetNames(global.testConfig.masterSheetId);
     
     expect(sheets).toBeInstanceOf(Array);
     expect(sheets.length).toBeGreaterThan(0);

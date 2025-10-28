@@ -2,7 +2,7 @@ const SheetsReader = require('./helpers/sheetsReader');
 
 describe('HR 管理系統測試場景 (依據 spec.md)', () => {
   let reader;
-  const testSheetId = global.testConfig.sheetId;
+  const masterSheetId = global.testConfig.masterSheetId;
 
   beforeAll(async () => {
     reader = new SheetsReader();
@@ -193,7 +193,7 @@ describe('HR 管理系統測試場景 (依據 spec.md)', () => {
       
       // 模擬在員工檔案中查找對應記錄
       const verificationResult = await simulateReverseValidation(
-        testSheetId,
+        masterSheetId,
         masterOvertimeRecord
       );
       

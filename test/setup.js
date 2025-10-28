@@ -5,7 +5,12 @@ jest.setTimeout(30000);
 
 // 全域測試配置
 global.testConfig = {
-  sheetId: process.env.TEST_SHEET_ID || '1fTQ3AZ93yP_q7oCncMASozScIJ36NlJwgc3vplr0nJI'
+  // 主控台試算表 ID（包含員工清單、加班記錄總表、補休申請總表）
+  masterSheetId: process.env.TEST_MASTER_SHEET_ID,
+  // 員工個人試算表 ID（包含各月份分頁）
+  employeeSheetId: process.env.TEST_EMPLOYEE_SHEET_ID,
+  // 向後相容的預設值
+  sheetId: process.env.TEST_SHEET_ID || process.env.TEST_MASTER_SHEET_ID
 };
 
 // 在所有測試開始前的設定

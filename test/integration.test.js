@@ -2,7 +2,7 @@ const SheetsReader = require('./helpers/sheetsReader');
 
 describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
   let reader;
-  const testSheetId = global.testConfig.sheetId;
+  const employeeSheetId = global.testConfig.employeeSheetId;
 
   beforeAll(async () => {
     reader = new SheetsReader();
@@ -24,7 +24,7 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
     // Step 2: 對每位員工執行檢查
     for (const employee of activeEmployees.slice(0, 2)) { // 限制測試數量
       try {
-        const result = await simulateCheckEmployeeData(employee.id, testSheetId);
+        const result = await simulateCheckEmployeeData(employee.id, employeeSheetId);
         newOvertimeCount += result.newRecords;
         processedCount++;
         
@@ -74,7 +74,7 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
     const testEmployeeId = 'E001';
     
     // 1. 掃描月份工作表
-    const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+    const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
     expect(monthlySheets).toBeInstanceOf(Array);
     
     let totalNewRecords = 0;
@@ -84,7 +84,7 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
     for (const sheetInfo of monthlySheets) {
       try {
         const overtimeData = await reader.extractOvertimeData(
-          testSheetId, 
+          employeeSheetId, 
           sheetInfo.title, 
           testEmployeeId
         );
@@ -126,13 +126,13 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
   });
 
   test('模擬資料驗證流程', async () => {
-    const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+    const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
     
     if (monthlySheets.length > 0) {
       const firstSheet = monthlySheets[0];
       
       // 讀取原始資料
-      const rawData = await reader.getFullSheetData(testSheetId, firstSheet.title);
+      const rawData = await reader.getFullSheetData(employeeSheetId, firstSheet.title);
       
       // 驗證資料完整性
       const validation = validateSheetData(rawData, firstSheet.title);
@@ -156,7 +156,7 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
   test('效能測試：處理多個工作表', async () => {
     const startTime = Date.now();
     
-    const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+    const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
     const scanTime = Date.now() - startTime;
     
     console.log(`⏱️ 掃描 ${monthlySheets.length} 個工作表用時: ${scanTime}ms`);
@@ -166,7 +166,7 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
     let totalRecords = 0;
     
     for (const sheet of monthlySheets.slice(0, 3)) { // 只測試前3個月
-      const data = await reader.getFullSheetData(testSheetId, sheet.title);
+      const data = await reader.getFullSheetData(employeeSheetId, sheet.title);
       totalRecords += data.length;
     }
     

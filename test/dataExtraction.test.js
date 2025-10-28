@@ -2,7 +2,7 @@ const SheetsReader = require('./helpers/sheetsReader');
 
 describe('Google Sheets 資料提取測試', () => {
   let reader;
-  const testSheetId = global.testConfig.sheetId;
+  const employeeSheetId = global.testConfig.employeeSheetId;
 
   beforeAll(async () => {
     reader = new SheetsReader();
@@ -10,7 +10,7 @@ describe('Google Sheets 資料提取測試', () => {
   });
 
   test('應該能掃描月份工作表', async () => {
-    const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+    const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
     
     expect(monthlySheets).toBeInstanceOf(Array);
     
@@ -33,13 +33,13 @@ describe('Google Sheets 資料提取測試', () => {
 
   test('應該能讀取指定範圍的資料', async () => {
     // 嘗試讀取第一個月份工作表的前10行
-    const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+    const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
     
     if (monthlySheets.length > 0) {
       const firstSheet = monthlySheets[0];
       const range = `${firstSheet.title}!A1:M10`;
       
-      const data = await reader.getSheetData(testSheetId, range);
+      const data = await reader.getSheetData(employeeSheetId, range);
       
       expect(data).toBeInstanceOf(Array);
       console.log(`📊 ${firstSheet.title} 前10行資料筆數:`, data.length);
@@ -51,14 +51,14 @@ describe('Google Sheets 資料提取測試', () => {
   });
 
   test('應該能提取加班資料', async () => {
-    const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+    const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
     
     if (monthlySheets.length > 0) {
       const firstSheet = monthlySheets[0];
       const testEmployeeId = 'TEST001'; // 使用測試員工ID
       
       const overtimeData = await reader.extractOvertimeData(
-        testSheetId, 
+        employeeSheetId, 
         firstSheet.title, 
         testEmployeeId
       );
@@ -85,12 +85,12 @@ describe('Google Sheets 資料提取測試', () => {
   });
 
   test('應該能讀取完整工作表資料', async () => {
-    const monthlySheets = await reader.scanMonthlySheets(testSheetId);
+    const monthlySheets = await reader.scanMonthlySheets(employeeSheetId);
     
     if (monthlySheets.length > 0) {
       const firstSheet = monthlySheets[0];
       
-      const fullData = await reader.getFullSheetData(testSheetId, firstSheet.title);
+      const fullData = await reader.getFullSheetData(employeeSheetId, firstSheet.title);
       
       expect(fullData).toBeInstanceOf(Array);
       console.log(`📊 ${firstSheet.title} 總行數:`, fullData.length);
