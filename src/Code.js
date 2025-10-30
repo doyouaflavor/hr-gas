@@ -42,6 +42,11 @@ function checkAllEmployees() {
     const validationErrors = validateOvertimeRecords();
     errorCount += validationErrors;
     
+    // 步驟3: 個人補休表同步
+    const syncResult = syncPersonalLeaveRequests();
+    const syncedLeaveCount = syncResult.syncedCount;
+    errorCount += syncResult.errorCount;
+    
     const matchResult = matchLeaveWithOvertime();
     matchedLeaveCount = matchResult.matched;
     errorCount += matchResult.errors;
@@ -53,6 +58,7 @@ function checkAllEmployees() {
 ━━━━━━━━━━━━━━━━━━━━
 處理員工數：${processedCount}
 新增加班記錄：${newOvertimeCount} 筆
+同步補休申請：${syncedLeaveCount} 筆
 配對補休記錄：${matchedLeaveCount} 筆
 發現錯誤：${errorCount} 筆
 執行時間：${duration} 秒
@@ -65,6 +71,7 @@ function checkAllEmployees() {
     return {
       processedCount,
       newOvertimeCount,
+      syncedLeaveCount,
       matchedLeaveCount,
       errorCount,
       duration
@@ -184,6 +191,18 @@ function addOvertimeRecord(record) {
   const employeeName = getEmployeeName(record.employeeId);
   const overtimeId = generateOvertimeId(record.date, record.employeeId);
   
+  // 例假日加班處理邏輯
+  let remainingHours, status;
+  if (record.type === '例假日') {
+    // 例假日加班不可補休
+    remainingHours = 0;
+    status = '例假日-僅發加班費';
+  } else {
+    // 一般加班可以補休
+    remainingHours = record.hours;
+    status = '未使用';
+  }
+  
   const newRow = [
     overtimeId,
     record.employeeId,
@@ -192,12 +211,12 @@ function addOvertimeRecord(record) {
     record.dayOfWeek,
     record.type,
     record.hours,
-    0,
-    record.hours,
-    '未使用',
+    0, // 已使用補休
+    remainingHours, // 剩餘可補休
+    status, // 狀態
     record.sourceMonth,
-    '',
-    ''
+    '', // 用掉補休編號
+    '' // 錯誤提示
   ];
   
   sheet.appendRow(newRow);
@@ -264,7 +283,8 @@ function matchLeaveWithOvertime() {
       
       if (!existingOvertimeId || existingOvertimeId === '') {
         try {
-          const result = allocateLeaveToOvertime(employeeId, leaveHours);
+          const leaveId = row[0]; // 補休編號
+          const result = allocateLeaveToOvertime(employeeId, leaveHours, leaveId);
           if (result.success) {
             updateLeaveRecord(leaveSheet, i + 1, result.overtimeIds.join(','));
             matchedCount++;
@@ -286,7 +306,7 @@ function matchLeaveWithOvertime() {
   }
 }
 
-function allocateLeaveToOvertime(employeeId, leaveHours) {
+function allocateLeaveToOvertime(employeeId, leaveHours, leaveId = '') {
   const overtimeSheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_SUMMARY);
   const data = overtimeSheet.getDataRange().getValues();
   
@@ -294,7 +314,9 @@ function allocateLeaveToOvertime(employeeId, leaveHours) {
   
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
-    if (row[1] === employeeId && parseFloat(row[8]) > 0) {
+    if (row[1] === employeeId && 
+        parseFloat(row[8]) > 0 && 
+        row[9] !== '例假日-僅發加班費') { // 排除例假日加班記錄
       availableRecords.push({
         rowIndex: i + 1,
         overtimeId: row[0],
@@ -328,6 +350,11 @@ function allocateLeaveToOvertime(employeeId, leaveHours) {
     overtimeSheet.getRange(record.rowIndex, 8).setValue(newUsedHours);
     overtimeSheet.getRange(record.rowIndex, 9).setValue(newRemainingHours);
     overtimeSheet.getRange(record.rowIndex, 10).setValue(status);
+    
+    // 回寫補休編號到加班記錄總表
+    if (leaveId) {
+      writeLeaveIdToOvertimeRecord(overtimeSheet, record.rowIndex, leaveId);
+    }
     
     usedOvertimeIds.push(record.overtimeId);
     remainingLeaveHours -= allocatedHours;
@@ -544,6 +571,269 @@ function formatDate(date) {
 function getDayOfWeek(date) {
   const days = ['日', '一', '二', '三', '四', '五', '六'];
   return days[date.getDay()];
+}
+
+// ===== 個人補休表同步功能 =====
+
+function syncPersonalLeaveRequests() {
+  try {
+    const startTime = new Date();
+    logExecution('開始', '系統', '開始執行個人補休表同步');
+    
+    let syncedCount = 0;
+    let errorCount = 0;
+    
+    const employees = getActiveEmployees();
+    
+    for (const employee of employees) {
+      try {
+        const leaveRequests = scanPersonalLeaveSheet(employee.fileId);
+        
+        for (const request of leaveRequests) {
+          try {
+            const leaveId = generateLeaveId(request.applicationDate, employee.id);
+            const leaveRequest = {
+              leaveId: leaveId,
+              employeeId: employee.id,
+              employeeName: employee.name,
+              applicationDate: request.applicationDate,
+              leaveDate: request.leaveDate,
+              hours: request.hours,
+              note: request.note
+            };
+            
+            const result = addLeaveRequestToMaster(leaveRequest);
+            if (result.success) {
+              writeLeaveIdToPersonalSheet(employee.fileId, request.rowIndex, leaveId);
+              syncedCount++;
+            } else {
+              errorCount++;
+              logError('補休申請同步失敗', employee.id, result.error);
+            }
+          } catch (error) {
+            errorCount++;
+            logError('個人補休處理失敗', employee.id, error.message);
+          }
+        }
+        
+        logExecution('處理', employee.id, `個人補休表同步完成 - 新增 ${leaveRequests.length} 筆申請`);
+      } catch (error) {
+        errorCount++;
+        logError('員工補休表存取失敗', employee.id, error.message);
+      }
+    }
+    
+    const endTime = new Date();
+    const duration = (endTime - startTime) / 1000;
+    
+    const report = `個人補休表同步完成：同步 ${syncedCount} 筆，錯誤 ${errorCount} 筆，耗時 ${duration} 秒`;
+    logExecution('完成', '系統', report);
+    
+    return { syncedCount, errorCount, duration };
+  } catch (error) {
+    logError('個人補休表同步失敗', '系統', error.message);
+    throw error;
+  }
+}
+
+function scanPersonalLeaveSheet(fileId) {
+  try {
+    const sheet = getEmployeeSheet(fileId, '個人補休表');
+    const data = sheet.getDataRange().getValues();
+    const leaveRequests = [];
+    
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      const leaveId = row[0]; // 補休編號
+      const employeeId = row[1]; // 員工編號
+      const employeeName = row[2]; // 姓名
+      const applicationDate = row[3]; // 申請日期
+      const leaveDate = row[4]; // 補休日期
+      const hours = parseFloat(row[5]) || 0; // 使用時數
+      const note = row[7] || ''; // 備註
+      
+      // 只處理尚未同步的記錄（補休編號為空）
+      if (!leaveId && applicationDate && leaveDate && hours > 0) {
+        const appDate = new Date(applicationDate);
+        const lvDate = new Date(leaveDate);
+        
+        if (isValidDate(appDate) && isValidDate(lvDate)) {
+          leaveRequests.push({
+            rowIndex: i + 1,
+            employeeId: employeeId,
+            employeeName: employeeName,
+            applicationDate: formatDate(appDate),
+            leaveDate: formatDate(lvDate),
+            hours: hours,
+            note: note
+          });
+        }
+      }
+    }
+    
+    return leaveRequests;
+  } catch (error) {
+    // 如果找不到個人補休表分頁，返回空陣列
+    if (error.message.includes('找不到工作表')) {
+      return [];
+    }
+    throw new Error(`掃描個人補休表失敗: ${error.message}`);
+  }
+}
+
+function generateLeaveId(date, employeeId) {
+  const dateStr = date.replace(/-/g, '');
+  const existingIds = getExistingLeaveIds(date, employeeId);
+  const sequence = existingIds.length + 1;
+  return `LV-${dateStr}-${employeeId}-${sequence}`;
+}
+
+function getExistingLeaveIds(date, employeeId) {
+  try {
+    const sheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_DETAILS);
+    const data = sheet.getDataRange().getValues();
+    const ids = [];
+    
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (row[1] === employeeId) {
+        const leaveId = row[0];
+        if (leaveId && leaveId.includes(date.replace(/-/g, ''))) {
+          ids.push(leaveId);
+        }
+      }
+    }
+    
+    return ids;
+  } catch (error) {
+    return [];
+  }
+}
+
+function addLeaveRequestToMaster(leaveRequest) {
+  try {
+    // 先進行自動配對
+    const allocationResult = allocateLeaveToOvertime(leaveRequest.employeeId, leaveRequest.hours, leaveRequest.leaveId);
+    
+    const sheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_DETAILS);
+    
+    let overtimeIds = '';
+    let error = '';
+    
+    if (allocationResult.success) {
+      overtimeIds = allocationResult.overtimeIds.join(',');
+    } else {
+      error = allocationResult.error;
+    }
+    
+    const newRow = [
+      leaveRequest.leaveId,
+      leaveRequest.employeeId,
+      leaveRequest.employeeName,
+      leaveRequest.applicationDate,
+      leaveRequest.leaveDate,
+      leaveRequest.hours,
+      overtimeIds, // 對應加班編號
+      leaveRequest.note,
+      false, // 行政組查閱打勾（核選方框）
+      error // 錯誤提示
+    ];
+    
+    sheet.appendRow(newRow);
+    
+    return allocationResult;
+  } catch (error) {
+    throw new Error(`新增補休申請失敗: ${error.message}`);
+  }
+}
+
+function writeLeaveIdToPersonalSheet(fileId, rowIndex, leaveId) {
+  try {
+    const sheet = getEmployeeSheet(fileId, '個人補休表');
+    sheet.getRange(rowIndex, 1).setValue(leaveId); // 第1欄是補休編號
+    return true;
+  } catch (error) {
+    logError('回寫補休編號失敗', fileId, error.message);
+    return false;
+  }
+}
+
+function writeLeaveIdToOvertimeRecord(overtimeSheet, rowIndex, leaveId) {
+  try {
+    const currentCell = overtimeSheet.getRange(rowIndex, 12); // 第12欄是用掉補休編號
+    const currentValue = currentCell.getValue() || '';
+    
+    let newValue;
+    if (currentValue === '') {
+      newValue = leaveId;
+    } else {
+      // 如果已有補休編號，用逗號分隔
+      const existingIds = currentValue.split(',');
+      if (!existingIds.includes(leaveId)) {
+        existingIds.push(leaveId);
+        newValue = existingIds.join(',');
+      } else {
+        newValue = currentValue; // 不重複新增
+      }
+    }
+    
+    currentCell.setValue(newValue);
+    return true;
+  } catch (error) {
+    logError('回寫補休編號到加班記錄失敗', 'system', error.message);
+    return false;
+  }
+}
+
+function writeLeaveIdToEmployeeSheet(employeeId, fileId, date, sourceMonth, leaveId) {
+  try {
+    const sheet = getEmployeeSheet(fileId, sourceMonth);
+    const data = sheet.getDataRange().getValues();
+    
+    // 找到對應日期的列
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      let rowDate;
+      
+      if (row[1] instanceof Date) {
+        rowDate = formatDate(row[1]);
+      } else if (typeof row[1] === 'string') {
+        const parsedDate = new Date(row[1]);
+        if (isValidDate(parsedDate)) {
+          rowDate = formatDate(parsedDate);
+        } else {
+          rowDate = row[1];
+        }
+      } else {
+        continue;
+      }
+      
+      if (rowDate === date) {
+        // 在備註欄（第13欄）加入補休編號
+        const noteCell = sheet.getRange(i + 1, 13);
+        const currentNote = noteCell.getValue() || '';
+        
+        let newNote;
+        if (currentNote === '') {
+          newNote = `補休編號:${leaveId}`;
+        } else {
+          if (!currentNote.includes(leaveId)) {
+            newNote = `${currentNote}; 補休編號:${leaveId}`;
+          } else {
+            newNote = currentNote; // 不重複新增
+          }
+        }
+        
+        noteCell.setValue(newNote);
+        return true;
+      }
+    }
+    
+    return false; // 找不到對應日期
+  } catch (error) {
+    logError('回寫補休編號到員工表格失敗', employeeId, error.message);
+    return false;
+  }
 }
 
 // ===== 測試與驗證函數 =====

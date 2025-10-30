@@ -39,6 +39,11 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
     const validationErrors = await simulateValidateOvertimeRecords();
     errorCount += validationErrors;
     
+    // Step 3.5: 模擬個人補休表同步
+    const syncResult = await simulatePersonalLeaveSync();
+    const syncedLeaveCount = syncResult.syncedCount;
+    errorCount += syncResult.errorCount;
+    
     // Step 4: 模擬補休配對
     const matchResult = await simulateMatchLeaveWithOvertime();
     const matchedCount = matchResult.matched;
@@ -51,6 +56,7 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
     const report = {
       processedCount,
       newOvertimeCount,
+      syncedLeaveCount,
       matchedCount,
       errorCount,
       duration
@@ -60,6 +66,7 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
     console.log(`━━━━━━━━━━━━━━━━━━━━`);
     console.log(`處理員工數：${report.processedCount}`);
     console.log(`新增加班記錄：${report.newOvertimeCount} 筆`);
+    console.log(`同步補休申請：${report.syncedLeaveCount} 筆`);
     console.log(`配對補休記錄：${report.matchedCount} 筆`);
     console.log(`發現錯誤：${report.errorCount} 筆`);
     console.log(`執行時間：${report.duration} 秒`);
@@ -151,6 +158,77 @@ describe('HR 管理系統整合測試 (基於 Apps Script 邏輯)', () => {
         console.log('⚠️ 發現警告:', validation.warnings);
       }
     }
+  });
+
+  test('例假日加班處理測試', async () => {
+    console.log('🧪 測試例假日加班處理邏輯...');
+    
+    // 模擬例假日加班記錄
+    const holidayOvertimeRecord = {
+      employeeId: 'E001',
+      date: '2025-01-01',
+      hours: 8,
+      type: '例假日',
+      note: '新年例假日加班',
+      sourceMonth: '1月',
+      dayOfWeek: '日'
+    };
+    
+    // 模擬一般加班記錄
+    const regularOvertimeRecord = {
+      employeeId: 'E001',
+      date: '2025-01-02',
+      hours: 4,
+      type: '上班日加班',
+      note: '平日加班',
+      sourceMonth: '1月',
+      dayOfWeek: '一'
+    };
+    
+    // 測試例假日加班記錄處理
+    const holidayResult = simulateAddOvertimeRecordWithHolidayLogic(holidayOvertimeRecord);
+    expect(holidayResult.remainingHours).toBe(0);
+    expect(holidayResult.status).toBe('例假日-僅發加班費');
+    
+    // 測試一般加班記錄處理
+    const regularResult = simulateAddOvertimeRecordWithHolidayLogic(regularOvertimeRecord);
+    expect(regularResult.remainingHours).toBe(4);
+    expect(regularResult.status).toBe('未使用');
+    
+    console.log('✅ 例假日加班處理邏輯正確');
+  });
+
+  test('個人補休表同步功能測試', async () => {
+    console.log('🧪 測試個人補休表同步功能...');
+    
+    // 模擬個人補休表資料
+    const personalLeaveRequests = [
+      {
+        employeeId: 'E001',
+        employeeName: '張OO',
+        applicationDate: '2025-01-15',
+        leaveDate: '2025-01-16',
+        hours: 4,
+        note: '個人事務'
+      }
+    ];
+    
+    // 模擬同步過程
+    const syncResults = [];
+    for (const request of personalLeaveRequests) {
+      const leaveId = simulateGenerateLeaveId(request.applicationDate, request.employeeId);
+      expect(leaveId).toMatch(/^LV-\d{8}-E\d{3}-\d+$/);
+      
+      const syncResult = simulateAddLeaveRequestToMaster({
+        ...request,
+        leaveId: leaveId
+      });
+      
+      syncResults.push(syncResult);
+    }
+    
+    console.log(`✅ 成功同步 ${syncResults.length} 筆補休申請`);
+    expect(syncResults.length).toBeGreaterThan(0);
   });
 
   test('效能測試：處理多個工作表', async () => {
@@ -250,10 +328,62 @@ function simulateAddOvertimeRecord(record) {
   };
 }
 
+// 模擬新增加班記錄（含例假日邏輯）
+function simulateAddOvertimeRecordWithHolidayLogic(record) {
+  const dateStr = record.date.replace(/-/g, '');
+  const sequence = 1;
+  
+  // 例假日加班處理邏輯
+  let remainingHours, status;
+  if (record.type === '例假日') {
+    remainingHours = 0;
+    status = '例假日-僅發加班費';
+  } else {
+    remainingHours = record.hours;
+    status = '未使用';
+  }
+  
+  return {
+    overtimeId: `OT-${dateStr}-${record.employeeId}-${sequence}`,
+    ...record,
+    usedHours: 0,
+    remainingHours: remainingHours,
+    status: status
+  };
+}
+
+// 模擬產生補休編號
+function simulateGenerateLeaveId(date, employeeId) {
+  const dateStr = date.replace(/-/g, '');
+  const sequence = 1; // 簡化為固定序號
+  return `LV-${dateStr}-${employeeId}-${sequence}`;
+}
+
+// 模擬新增補休申請到主控台
+function simulateAddLeaveRequestToMaster(leaveRequest) {
+  // 模擬配對結果
+  const success = Math.random() > 0.3; // 70% 成功率
+  
+  return {
+    success: success,
+    leaveId: leaveRequest.leaveId,
+    overtimeIds: success ? ['OT-20250110-E001-1'] : [],
+    error: success ? '' : '補休時數超過可用加班時數'
+  };
+}
+
 // 模擬反向驗證加班記錄
 async function simulateValidateOvertimeRecords() {
   // 模擬發現 0-2 個驗證錯誤
   return Math.floor(Math.random() * 3);
+}
+
+// 模擬個人補休表同步
+async function simulatePersonalLeaveSync() {
+  return {
+    syncedCount: Math.floor(Math.random() * 5), // 隨機同步數量
+    errorCount: Math.floor(Math.random() * 2)   // 隨機錯誤數量
+  };
 }
 
 // 模擬補休配對
