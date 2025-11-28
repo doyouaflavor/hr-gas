@@ -1,1341 +1,1218 @@
-function testConnection() {
-  Logger.log('測試連線...');
-  
-  const ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
-  const employeeSheet = ss.getSheetByName(CONFIG.SHEETS.EMPLOYEES);
-  
-  if (employeeSheet) {
-    Logger.log('✅ 成功連接到主控制台');
-    Logger.log('員工數量：' + (employeeSheet.getLastRow() - 1));
-  } else {
-    Logger.log('❌ 找不到員工清單工作表');
-  }
+// ===== 選單功能 =====
+
+/**
+ * 創建自定義選單
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('加班時數計算')
+    .addItem('計算當前試算表的加班時數', 'runOvertimeCalculation')
+    .addItem('測試加班計算功能', 'testConnection')
+    .addItem('查看執行紀錄', 'showExecutionLog')
+    .addToUi();
 }
 
-// ===== 主要流程 =====
-
-function checkAllEmployees() {
+/**
+ * 主要功能：計算控制中樞表中已啟用員工的加班時數
+ */
+function runOvertimeCalculation() {
+  const startTime = new Date();
+  const CONTROL_CENTER_ID = '1fTQ3AZ93yP_q7oCncMASozScIJ36NlJwgc3vplr0nJI';
+  
   try {
-    const startTime = new Date();
-    logExecution('開始', '系統', '開始執行全員檢查');
+    // 記錄開始
+    logExecution('開始', '系統', '開始計算所有啟用員工加班時數', '控制中樞表', '讀取員工清單並批量處理');
     
-    let processedCount = 0;
-    let newOvertimeCount = 0;
-    let matchedLeaveCount = 0;
-    let errorCount = 0;
+    // 讀取控制中樞表的員工清單
+    const activeEmployees = getActiveEmployeesFromControlCenter(CONTROL_CENTER_ID);
     
-    const employees = getActiveEmployees();
+    if (activeEmployees.length === 0) {
+      const noEmployeeMessage = '⚠️ 沒有找到已啟用的員工';
+      logExecution('警告', '系統', '無已啟用員工', '控制中樞表', '員工清單中沒有狀態為「啟用」的員工');
+      SpreadsheetApp.getUi().alert('警告', noEmployeeMessage, SpreadsheetApp.getUi().AlertType.WARNING);
+      return;
+    }
     
-    for (const employee of employees) {
+    let allOvertimeRecords = [];
+    let successCount = 0;
+    let errorDetails = [];
+    
+    // 逐一處理每個已啟用的員工
+    for (const employee of activeEmployees) {
       try {
-        const result = checkEmployeeData(employee.id, employee.fileId);
-        newOvertimeCount += result.newRecords;
-        processedCount++;
+        logExecution('處理', '系統', `開始處理員工: ${employee.name}`, '個人試算表', `ID: ${employee.fileId}`);
         
-        logExecution('處理', employee.id, `處理完成 - 新增 ${result.newRecords} 筆加班記錄`);
+        const overtimeRecords = calculateOvertimeForEmployee(employee.fileId);
+        
+        // 為每筆記錄加上員工資訊
+        const recordsWithEmployee = overtimeRecords.map(record => ({
+          ...record,
+          employeeId: employee.id,
+          employeeName: employee.name
+        }));
+        
+        allOvertimeRecords.push(...recordsWithEmployee);
+        successCount++;
+        
+        logExecution('完成', '系統', `完成處理員工: ${employee.name}`, '個人試算表', 
+                    `找到 ${overtimeRecords.length} 筆加班記錄`);
+                    
       } catch (error) {
-        errorCount++;
-        logError('員工處理失敗', employee.id, error.message);
+        const errorMsg = `處理員工 ${employee.name} (${employee.id}) 失敗: ${error.message}`;
+        errorDetails.push(errorMsg);
+        logExecution('錯誤', '系統', `處理員工失敗: ${employee.name}`, '個人試算表', error.message);
+        console.log(errorMsg);
       }
     }
     
-    const validationErrors = validateOvertimeRecords();
-    errorCount += validationErrors;
-    
-    // 步驟3: 個人補休表同步
-    const syncResult = syncPersonalLeaveRequests();
-    const syncedLeaveCount = syncResult.syncedCount;
-    errorCount += syncResult.errorCount;
-    
-    const matchResult = matchLeaveWithOvertime();
-    matchedLeaveCount = matchResult.matched;
-    errorCount += matchResult.errors;
+    // 為每位員工寫入加班記錄到各自的「加班費紀錄總表」
+    let totalRecordsWritten = 0;
+    for (const employee of activeEmployees) {
+      const employeeRecords = allOvertimeRecords.filter(record => record.employeeId === employee.id);
+      if (employeeRecords.length > 0) {
+        const recordCount = writeOvertimeRecordsToEmployeeSheet(employeeRecords, employee.fileId);
+        totalRecordsWritten += recordCount;
+      }
+    }
     
     const endTime = new Date();
     const duration = (endTime - startTime) / 1000;
     
-    const report = `✅ 檢查完成報告
+    let successMessage = `✅ 批量加班時數計算完成！
 ━━━━━━━━━━━━━━━━━━━━
-處理員工數：${processedCount}
-新增加班記錄：${newOvertimeCount} 筆
-同步補休申請：${syncedLeaveCount} 筆
-配對補休記錄：${matchedLeaveCount} 筆
-發現錯誤：${errorCount} 筆
-執行時間：${duration} 秒
-
-詳細記錄請查看「執行紀錄」工作表`;
+處理員工數: ${activeEmployees.length} 人
+成功處理: ${successCount} 人
+共計算出: ${allOvertimeRecords.length} 筆加班記錄
+成功寫入: ${totalRecordsWritten} 筆到各員工試算表
+執行時間: ${duration.toFixed(2)} 秒`;
     
-    Logger.log(report);
-    logExecution('完成', '系統', report);
-    
-    return {
-      processedCount,
-      newOvertimeCount,
-      syncedLeaveCount,
-      matchedLeaveCount,
-      errorCount,
-      duration
-    };
-    
-  } catch (error) {
-    logError('系統錯誤', '系統', error.message);
-    throw error;
-  }
-}
-
-// ===== 員工資料檢查 =====
-
-function checkEmployeeData(employeeId, fileId) {
-  try {
-    const sheets = scanMonthlySheets(fileId);
-    let newRecordCount = 0;
-    
-    for (const sheetInfo of sheets) {
-      try {
-        const overtimeData = extractOvertimeData(sheetInfo.sheet, sheetInfo.name, employeeId);
-        
-        for (const record of overtimeData) {
-          if (!overtimeRecordExists(employeeId, record.date)) {
-            addOvertimeRecord(record);
-            newRecordCount++;
-          }
-        }
-      } catch (error) {
-        logError('月份分頁處理失敗', employeeId, `${sheetInfo.name}: ${error.message}`);
+    if (errorDetails.length > 0) {
+      successMessage += `\n\n❌ 處理失敗: ${errorDetails.length} 人\n${errorDetails.slice(0, 3).join('\n')}`;
+      if (errorDetails.length > 3) {
+        successMessage += `\n... 還有 ${errorDetails.length - 3} 個錯誤，請查看執行紀錄`;
       }
     }
     
-    return { newRecords: newRecordCount };
+    // 記錄完成
+    logExecution('完成', '系統', '批量加班時數計算完成', '所有員工試算表', 
+                `處理: ${activeEmployees.length}人, 成功: ${successCount}人, 記錄: ${allOvertimeRecords.length}筆, 寫入: ${totalRecordsWritten}筆, 耗時: ${duration.toFixed(2)}秒`);
+    
+    // 顯示結果給用戶
+    SpreadsheetApp.getUi().alert('批量計算完成', successMessage, SpreadsheetApp.getUi().AlertType.INFO);
+    
+    Logger.log(successMessage);
+    
   } catch (error) {
-    logError('員工資料檢查失敗', employeeId, error.message);
-    throw error;
+    const errorMessage = `❌ 批量計算失敗: ${error.message}`;
+    
+    // 記錄錯誤
+    logExecution('錯誤', '系統', '批量加班時數計算失敗', '控制中樞表', error.message);
+    
+    // 顯示錯誤給用戶
+    SpreadsheetApp.getUi().alert('批量計算失敗', errorMessage, SpreadsheetApp.getUi().AlertType.ERROR);
+    
+    Logger.log(errorMessage);
   }
 }
 
-function scanMonthlySheets(fileId) {
+/**
+ * 測試連線功能
+ */
+function testConnection() {
+  const startTime = new Date();
+  const CONTROL_CENTER_ID = '1fTQ3AZ93yP_q7oCncMASozScIJ36NlJwgc3vplr0nJI';
+  
+  try {
+    // 記錄開始測試
+    logExecution('測試', '系統', '開始測試批量加班計算功能', '測試模式', '讀取控制中樞表並測試第一位啟用員工');
+    
+    // 讀取控制中樞表的員工清單
+    const activeEmployees = getActiveEmployeesFromControlCenter(CONTROL_CENTER_ID);
+    
+    if (activeEmployees.length === 0) {
+      const testMessage = '⚠️ 測試失敗：沒有找到已啟用的員工';
+      logExecution('測試', '系統', '測試失敗', '測試模式', '控制中樞表中無啟用員工');
+      SpreadsheetApp.getUi().alert('測試結果', testMessage, SpreadsheetApp.getUi().AlertType.WARNING);
+      return;
+    }
+    
+    // 只測試第一位啟用的員工
+    const testEmployee = activeEmployees[0];
+    const overtimeRecords = calculateOvertimeForEmployee(testEmployee.fileId);
+    
+    const endTime = new Date();
+    const duration = (endTime - startTime) / 1000;
+    
+    const testMessage = `✅ 測試成功！
+━━━━━━━━━━━━━━━━━━━━
+控制中樞表讀取: ✓
+找到啟用員工: ${activeEmployees.length} 人
+測試員工: ${testEmployee.name} (${testEmployee.id})
+找到加班記錄: ${overtimeRecords.length} 筆
+測試時間: ${duration.toFixed(2)} 秒
+
+前3筆記錄範例:
+${overtimeRecords.slice(0, 3).map((record, index) => 
+  `${index + 1}. ${record.dateKey} - ${record.hours}小時 (${record.multiplier}倍)`
+).join('\n')}
+
+所有啟用員工清單:
+${activeEmployees.map((emp, index) => 
+  `${index + 1}. ${emp.name} (${emp.id})`
+).join('\n')}`;
+    
+    // 記錄測試結果
+    logExecution('測試', '系統', '批量測試完成', '測試模式', 
+                `啟用員工: ${activeEmployees.length}人, 測試員工: ${testEmployee.name}, 找到記錄: ${overtimeRecords.length}筆, 耗時: ${duration.toFixed(2)}秒`);
+    
+    // 顯示測試結果給用戶
+    SpreadsheetApp.getUi().alert('測試結果', testMessage, SpreadsheetApp.getUi().AlertType.INFO);
+    
+    Logger.log(testMessage);
+    
+  } catch (error) {
+    const errorMessage = `❌ 測試失敗: ${error.message}`;
+    
+    // 記錄測試錯誤
+    logExecution('錯誤', '系統', '批量測試失敗', '測試模式', error.message);
+    
+    // 顯示錯誤給用戶
+    SpreadsheetApp.getUi().alert('測試失敗', errorMessage, SpreadsheetApp.getUi().AlertType.ERROR);
+    
+    Logger.log(errorMessage);
+  }
+}
+
+/**
+ * 顯示執行紀錄
+ */
+function showExecutionLog() {
+  try {
+    const executionSheet = getOrCreateExecutionLogSheet();
+    const data = executionSheet.getDataRange().getValues();
+    
+    if (data.length <= 1) {
+      SpreadsheetApp.getUi().alert('執行紀錄', '目前沒有執行紀錄', SpreadsheetApp.getUi().AlertType.INFO);
+      return;
+    }
+    
+    // 顯示最近5筆記錄
+    const recentRecords = data.slice(-6, -1).reverse(); // 排除標題行，取最後5筆，並反轉順序（最新在前）
+    const logMessage = `最近執行紀錄：\n\n${recentRecords.map(row => 
+      `${row[0]} [${row[1]}] ${row[2]}\n範圍: ${row[3]}\n詳情: ${row[4]}`
+    ).join('\n\n')}`;
+    
+    SpreadsheetApp.getUi().alert('執行紀錄', logMessage, SpreadsheetApp.getUi().AlertType.INFO);
+    
+  } catch (error) {
+    SpreadsheetApp.getUi().alert('錯誤', `無法讀取執行紀錄: ${error.message}`, SpreadsheetApp.getUi().AlertType.ERROR);
+  }
+}
+
+/**
+ * 計算單一員工的所有加班時數記錄
+ */
+function calculateOvertimeForEmployee(fileId) {
   try {
     const ss = SpreadsheetApp.openById(fileId);
-    const sheets = ss.getSheets();
-    const monthlySheets = [];
     
-    const monthPattern = /^(\d{1,2})月$/;
+    // 月份工作表名稱
+    const monthlySheetNames = [
+      '2025年1月工時紀錄', '2025年2月工時紀錄', '2025年3月工時紀錄',
+      '2025年4月工時紀錄', '2025年5月工時紀錄', '2025年6月工時紀錄',
+      '2025年7月', '2025年8月', '2025年9月', '2025年10月', '2025年11月'
+    ];
     
-    for (const sheet of sheets) {
-      const name = sheet.getName();
-      if (monthPattern.test(name)) {
-        monthlySheets.push({
-          sheet: sheet,
-          name: name,
-          month: parseInt(name.match(monthPattern)[1])
+    let allOvertimeRecords = [];
+    
+    for (const sheetName of monthlySheetNames) {
+      try {
+        const sheet = ss.getSheetByName(sheetName);
+        if (!sheet) {
+          console.log(`警告：找不到工作表 "${sheetName}"`);
+          continue;
+        }
+        
+        const workRecords = getWorkRecordsFromEmployeeSheet(sheet, sheetName);
+        
+        for (const record of workRecords) {
+          const overtimeForDay = calculateOvertimeForDay(record);
+          allOvertimeRecords.push(...overtimeForDay);
+        }
+      } catch (error) {
+        const errorMsg = `處理工作表 "${sheetName}" 時發生錯誤: ${error.message}`;
+        console.log(errorMsg);
+        // 記錄到執行日誌以便用戶看到
+        try {
+          logExecution('錯誤', '系統', `工作表處理失敗: ${sheetName}`, '個人試算表', error.message);
+        } catch (logError) {
+          console.log(`日誌記錄失敗: ${logError.message}`);
+        }
+      }
+    }
+    
+    return allOvertimeRecords;
+  } catch (error) {
+    throw new Error(`計算員工加班時數失敗: ${error.message}`);
+  }
+}
+
+/**
+ * 從日期字符串獲取星期
+ */
+function getDayOfWeekFromDate(dateString) {
+  try {
+    const date = new Date(dateString);
+    const days = ['日', '一', '二', '三', '四', '五', '六'];
+    return days[date.getDay()];
+  } catch (error) {
+    return '';
+  }
+}
+
+
+// ===== 整合的 OvertimeCalculator 功能 =====
+
+/**
+ * 重命名函數以避免衝突
+ */
+function getWorkRecordsFromEmployeeSheet(sheet, sheetName) {
+  const data = sheet.getDataRange().getValues();
+  const records = [];
+  
+  // 判斷格式類型
+  if (isMonthlyFormat1to5(sheetName)) {
+    return parseMonthlyFormat1to5(data);
+  } else if (isMonthlyFormat6(sheetName)) {
+    return parseMonthlyFormat6(data);
+  } else if (isMonthlyFormat7Plus(sheetName)) {
+    return parseMonthlyFormat7Plus(data);
+  }
+  
+  return records;
+}
+
+function isMonthlyFormat1to5(sheetName) {
+  return sheetName.includes('年1月') || sheetName.includes('年2月') || 
+         sheetName.includes('年3月') || sheetName.includes('年4月') || 
+         sheetName.includes('年5月');
+}
+
+function isMonthlyFormat6(sheetName) {
+  return sheetName.includes('年6月');
+}
+
+function isMonthlyFormat7Plus(sheetName) {
+  return sheetName.includes('年7月') || sheetName.includes('年8月') || 
+         sheetName.includes('年9月') || sheetName.includes('年10月') || 
+         sheetName.includes('年11月') || sheetName.includes('年12月');
+}
+
+function parseMonthlyFormat1to5(data) {
+  const records = [];
+  
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (!row[1] || !row[2]) continue;
+    if (row[1].toString().includes('小計')) continue;
+    
+    const clockIn = new Date(row[1]);
+    const clockOut = new Date(row[2]);
+    const workHours = parseFloat(row[5]) || 0;
+    
+    if (workHours > 0 && !isNaN(clockIn.getTime()) && !isNaN(clockOut.getTime())) {
+      if (clockOut < clockIn) {
+        clockOut.setDate(clockOut.getDate() + 1);
+      }
+      
+      const dateKey = formatDateKey(clockIn);
+      
+      records.push({
+        date: clockIn.toDateString(),
+        dateKey: dateKey,
+        clockIn: clockIn,
+        clockOut: clockOut,
+        totalWorkHours: workHours,
+        isWeekend: isWeekend(clockIn),
+        isHoliday: false,
+        note: row[6] || ''
+      });
+    }
+  }
+  
+  return records;
+}
+
+function parseMonthlyFormat6(data) {
+  const records = [];
+  let currentDate = null;
+  let currentSessions = [];
+  
+  for (let i = 2; i < data.length; i++) {
+    const row = data[i];
+    if (!row[1]) continue;
+    
+    const cellB = row[1].toString();
+    
+    if ((cellB.includes('2025-') || cellB.includes('2025/')) && 
+        (cellB.includes('例假日') || cellB.includes('休息日') || 
+         (cellB.length > 10 && row[2]) ||  // 處理 "2025-06-30 15:30:00" 這種格式
+         cellB.includes('日'))) {
+      if (currentDate && currentSessions.length > 0) {
+        const record = processDaySessionsFormat6(currentDate, currentSessions);
+        if (record) records.push(record);
+      }
+      
+      currentDate = {
+        date: cellB,
+        dayTotal: parseFloat(row[6]) || 0,
+        note: row[7] || ''
+      };
+      currentSessions = [];
+      
+      // 6月格式：B欄和C欄直接是完整的時間戳
+      if (cellB.includes(':') && row[2] && row[2].toString().includes(':')) {
+        // 格式：B="2025-06-30 15:30:00", C="2025-06-30 19:30:59"
+        currentSessions.push({
+          clockIn: cellB,  // B欄就是上班時間
+          clockOut: row[2], // C欄是下班時間
+          hours: parseFloat(row[3]) || 0, // D欄是工作時數
+          note: row[7] || ''
+        });
+      } else if (row[2] && row[3]) {
+        // 原本的格式：C欄=上班, D欄=下班
+        currentSessions.push({
+          clockIn: row[2],
+          clockOut: row[3],
+          hours: parseFloat(row[4]) || 0,
+          note: row[7] || ''
+        });
+      }
+    } else if (currentDate) {
+      // 處理同一日的其他時段
+      const cellB2 = row[1] ? row[1].toString() : '';
+      
+      if (cellB2.includes(':') && row[2] && row[2].toString().includes(':')) {
+        // 6月格式的其他時段：B="2025-06-30 13:30:00", C="2025-06-30 14:30:00"
+        currentSessions.push({
+          clockIn: cellB2,
+          clockOut: row[2],
+          hours: parseFloat(row[3]) || 0,
+          note: row[7] || ''
+        });
+      } else if (row[2] && row[3]) {
+        // 原本格式的其他時段
+        currentSessions.push({
+          clockIn: row[2],
+          clockOut: row[3],
+          hours: parseFloat(row[4]) || 0,
+          note: row[7] || ''
+        });
+      }
+    }
+  }
+  
+  if (currentDate && currentSessions.length > 0) {
+    const record = processDaySessionsFormat6(currentDate, currentSessions);
+    if (record) records.push(record);
+  }
+  
+  return records;
+}
+
+function parseMonthlyFormat7Plus(data) {
+  const records = [];
+  let currentDate = null;
+  let currentSessions = [];
+  
+  for (let i = 2; i < data.length; i++) {
+    const row = data[i];
+    if (!row[1]) continue;
+    
+    const cellB = row[1].toString();
+    
+    if (cellB.includes('2025')) {
+      if (currentDate && currentSessions.length > 0) {
+        const record = processDaySessionsFormat7Plus(currentDate, currentSessions);
+        if (record) records.push(record);
+      }
+      
+      currentDate = {
+        date: cellB,
+        dayType: row[2] || '',
+        dayTotal: parseFloat(row[7]) || 0,
+        overtimeHours: parseFloat(row[9]) || 0,
+        note: row[10] || row[9] || ''
+      };
+      
+      // 調試：記錄每日總工時的提取
+      const debugMsg = `7+月格式提取: 日期=${cellB}, H欄dayTotal=${row[7]}, J欄overtime=${row[9]}`;
+      console.log(debugMsg);
+      logExecution('調試', '系統', debugMsg, '數據提取', '');
+      currentSessions = [];
+      
+      // 檢查不同的欄位組合
+      if (row[3] && row[4]) {
+        // 標準7月格式：D欄=上班, E欄=下班
+        currentSessions.push({
+          clockIn: row[3],
+          clockOut: row[4],
+          hours: parseFloat(row[5]) || 0,
+          workHours: parseFloat(row[7]) || 0,
+          note: currentDate.note
+        });
+      } else if (row[2] && row[3]) {
+        // 某些變體格式：C欄=上班, D欄=下班
+        currentSessions.push({
+          clockIn: row[2],
+          clockOut: row[3],
+          hours: parseFloat(row[4]) || 0,
+          workHours: parseFloat(row[6]) || 0,
+          note: currentDate.note
+        });
+      }
+    } else if (currentDate && (row[3] && row[4])) {
+      // 標準格式：D欄=上班, E欄=下班
+      currentSessions.push({
+        clockIn: row[3],
+        clockOut: row[4],
+        hours: parseFloat(row[5]) || 0,
+        workHours: parseFloat(row[7]) || 0,
+        note: row[10] || row[9] || ''
+      });
+    } else if (currentDate && (row[2] && row[3])) {
+      // 變體格式：C欄=上班, D欄=下班
+      currentSessions.push({
+        clockIn: row[2],
+        clockOut: row[3],
+        hours: parseFloat(row[4]) || 0,
+        workHours: parseFloat(row[6]) || 0,
+        note: row[10] || row[9] || ''
+      });
+    }
+  }
+  
+  if (currentDate && currentSessions.length > 0) {
+    const record = processDaySessionsFormat7Plus(currentDate, currentSessions);
+    if (record) records.push(record);
+  }
+  
+  return records;
+}
+
+function processDaySessionsFormat6(dateInfo, sessions) {
+  if (sessions.length === 0) return null;
+  
+  let date;
+  const dateStr = dateInfo.date;
+  if (dateStr.includes('例假日') || dateStr.includes('休息日')) {
+    // 支援 2025-MM-DD 和 2025/MM/DD 格式
+    const dateMatch = dateStr.match(/2025[-/]\d{2}[-/]\d{2}/);
+    if (!dateMatch) return null;
+    const normalizedDate = dateMatch[0].replace(/\//g, '-');
+    date = new Date(normalizedDate);
+  } else {
+    const firstPart = dateStr.split(' ')[0];
+    // 支援 2025-MM-DD 和 2025/MM/DD 格式
+    const normalizedDate = firstPart.replace(/\//g, '-');
+    date = new Date(normalizedDate);
+  }
+  
+  let earliestClockIn = null;
+  let latestClockOut = null;
+  
+  sessions.forEach(session => {
+    if (session.note && session.note.includes('補休')) return;
+    
+    let clockIn, clockOut;
+    
+    // 檢查是否為完整時間戳格式 (如 "2025-06-30 15:30:00")
+    if (session.clockIn.includes(' ') && session.clockIn.includes('-')) {
+      clockIn = new Date(session.clockIn);
+      clockOut = new Date(session.clockOut);
+    } else {
+      // 原本的格式：只有時間部分，需要加上日期
+      clockIn = new Date(`${date.toDateString()} ${session.clockIn}`);
+      clockOut = new Date(`${date.toDateString()} ${session.clockOut}`);
+    }
+    
+    if (!earliestClockIn || clockIn < earliestClockIn) {
+      earliestClockIn = clockIn;
+    }
+    if (!latestClockOut || clockOut > latestClockOut) {
+      latestClockOut = clockOut;
+    }
+  });
+  
+  if (!earliestClockIn || !latestClockOut) return null;
+  
+  const dateKey = formatDateKey(date);
+  
+  return {
+    date: date.toDateString(),
+    dateKey: dateKey,
+    clockIn: earliestClockIn,
+    clockOut: latestClockOut,
+    totalWorkHours: dateInfo.dayTotal,
+    isWeekend: isWeekend(date) || dateStr.includes('休息日'),
+    isHoliday: dateStr.includes('例假日'),
+    note: dateInfo.note
+  };
+}
+
+function processDaySessionsFormat7Plus(dateInfo, sessions) {
+  if (sessions.length === 0) return null;
+  
+  const dateStr = dateInfo.date;
+  let dateMatch = dateStr.match(/2025[.-]\d{2}[.-]\d{2}/);
+  
+  if (!dateMatch) {
+    // 嘗試其他格式：2025.11.01 或 2025-10-01
+    dateMatch = dateStr.match(/2025[.\-]\d{1,2}[.\-]\d{1,2}/);
+  }
+  
+  if (!dateMatch) {
+    console.log(`無法解析日期格式: ${dateStr}`);
+    return null;
+  }
+  
+  // 正則化日期格式
+  let normalizedDate = dateMatch[0].replace(/\./g, '-');
+  
+  // 確保月份和日期為兩位數
+  const dateParts = normalizedDate.split('-');
+  if (dateParts.length === 3) {
+    const year = dateParts[0];
+    const month = dateParts[1].padStart(2, '0');
+    const day = dateParts[2].padStart(2, '0');
+    normalizedDate = `${year}-${month}-${day}`;
+  }
+  
+  const date = new Date(normalizedDate);
+  
+  // 檢查日期是否有效
+  if (isNaN(date.getTime())) {
+    console.log(`無法創建有效日期: ${normalizedDate} 原始: ${dateStr}`);
+    return null;
+  }
+  
+  let earliestClockIn = null;
+  let latestClockOut = null;
+  let totalWorkHours = 0;
+  
+  sessions.forEach(session => {
+    const noteStr = session.note ? session.note.toString() : '';
+    if (noteStr && (noteStr.includes('補休') || noteStr.includes('午休') || noteStr.includes('晚休'))) {
+      return;
+    }
+    
+    let clockIn, clockOut;
+    
+    if (typeof session.clockIn === 'string') {
+      if (session.clockIn.includes(':')) {
+        const dateString = date.toISOString().split('T')[0]; // YYYY-MM-DD 格式
+        clockIn = new Date(`${dateString} ${session.clockIn}`);
+      } else {
+        clockIn = new Date(session.clockIn);
+      }
+    } else {
+      clockIn = new Date(session.clockIn);
+    }
+    
+    if (typeof session.clockOut === 'string') {
+      if (session.clockOut.includes(':')) {
+        const dateString = date.toISOString().split('T')[0]; // YYYY-MM-DD 格式
+        clockOut = new Date(`${dateString} ${session.clockOut}`);
+      } else {
+        clockOut = new Date(session.clockOut);
+      }
+    } else {
+      clockOut = new Date(session.clockOut);
+    }
+    
+    // 檢查時間是否有效
+    if (isNaN(clockIn.getTime()) || isNaN(clockOut.getTime())) {
+      console.log(`無法解析打卡時間: ${session.clockIn} - ${session.clockOut}`);
+      return;
+    }
+    
+    if (clockOut < clockIn) {
+      clockOut.setDate(clockOut.getDate() + 1);
+    }
+    
+    if (!earliestClockIn || clockIn < earliestClockIn) {
+      earliestClockIn = clockIn;
+    }
+    if (!latestClockOut || clockOut > latestClockOut) {
+      latestClockOut = clockOut;
+    }
+    
+    totalWorkHours += session.workHours || session.hours || 0;
+  });
+  
+  if (!earliestClockIn || !latestClockOut) return null;
+  
+  const finalWorkHours = dateInfo.dayTotal || totalWorkHours;
+  const dateKey = formatDateKey(date);
+  
+  // 調試：記錄最終工時的決定過程
+  const workHoursMsg = `${dateKey}: dayTotal=${dateInfo.dayTotal}, calculated=${totalWorkHours}, final=${finalWorkHours}`;
+  console.log(workHoursMsg);
+  logExecution('調試', '系統', workHoursMsg, '工時計算', '');
+  
+  const result = {
+    date: date.toDateString(),
+    dateKey: dateKey,
+    clockIn: earliestClockIn,
+    clockOut: latestClockOut,
+    totalWorkHours: finalWorkHours,
+    isWeekend: isWeekend(date) || dateInfo.dayType.includes('休息日'),
+    isHoliday: dateInfo.dayType.includes('國定假日') || dateInfo.dayType.includes('特休'),
+    note: dateInfo.note
+  };
+  
+  const resultMsg = `成功創建記錄: ${dateKey}, 工時=${finalWorkHours}`;
+  console.log(resultMsg);
+  logExecution('調試', '系統', resultMsg, '記錄創建', '');
+  
+  return result;
+}
+
+function calculateOvertimeForDay(record) {
+  const overtimeRecords = [];
+  const workHours = record.totalWorkHours;
+  
+  // 記錄所有處理的記錄以便調試
+  const logMsg = `處理日期 ${record.dateKey}: 工時=${workHours}小時`;
+  console.log(logMsg);
+  
+  // 新規則：7.25小時以下不算加班
+  if (workHours <= 7.25) {
+    const skipMsg = `跳過 ${record.dateKey}: 工時${workHours}小時 ≤ 7.25小時 (緩衝時間)`;
+    console.log(skipMsg);
+    return [];
+  }
+  
+  const clockInTime = new Date(record.clockIn);
+  const regularEndTime = new Date(clockInTime.getTime() + 7.25 * 60 * 60 * 1000);
+  
+  if (record.isWeekend) {
+    calculateWeekendOvertime(record, overtimeRecords);
+  } else if (record.isHoliday) {
+    calculateHolidayOvertime(record, overtimeRecords);
+  } else {
+    calculateWeekdayOvertime(record, overtimeRecords, regularEndTime);
+  }
+  
+  return overtimeRecords;
+}
+
+function calculateWeekdayOvertime(record, overtimeRecords, regularEndTime) {
+  const workHours = record.totalWorkHours;
+  
+  // 新規則：7-7.25小時為緩衝時間，不算加班
+  if (workHours <= 7.25) {
+    return; // 沒有加班
+  }
+  
+  // 計算理論下班時間（上班時間 + 7.25小時，包含緩衝時間）
+  const clockInTime = new Date(record.clockIn);
+  const bufferEndTime = new Date(clockInTime.getTime() + 7.25 * 60 * 60 * 1000);
+  let currentStartTime = new Date(bufferEndTime);
+  
+  if (workHours > 7.25 && workHours <= 8) {
+    // 7.25~8小時：1倍
+    const hours = workHours - 7.25;
+    const endTime = new Date(currentStartTime.getTime() + hours * 60 * 60 * 1000);
+    
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(currentStartTime),
+      endDateTime: formatDateTime(endTime),
+      hours: parseFloat(hours.toFixed(2)),
+      multiplier: 1,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+  } else if (workHours > 8 && workHours <= 10) {
+    // 7.25~8小時：1倍
+    const hours1 = 8 - 7.25;  // 0.75小時
+    const endTime1 = new Date(currentStartTime.getTime() + hours1 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(currentStartTime),
+      endDateTime: formatDateTime(endTime1),
+      hours: parseFloat(hours1.toFixed(2)),
+      multiplier: 1,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+    
+    // 8~10小時：1.34倍
+    const hours2 = workHours - 8;
+    const endTime2 = new Date(endTime1.getTime() + hours2 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(endTime1),
+      endDateTime: formatDateTime(endTime2),
+      hours: parseFloat(hours2.toFixed(2)),
+      multiplier: 1.34,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+  } else if (workHours > 10) {
+    // 7.25~8小時：1倍
+    const hours1 = 8 - 7.25;  // 0.75小時
+    const endTime1 = new Date(currentStartTime.getTime() + hours1 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(currentStartTime),
+      endDateTime: formatDateTime(endTime1),
+      hours: parseFloat(hours1.toFixed(2)),
+      multiplier: 1,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+    
+    // 8~10小時：1.34倍
+    const endTime2 = new Date(endTime1.getTime() + 2 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(endTime1),
+      endDateTime: formatDateTime(endTime2),
+      hours: 2,
+      multiplier: 1.34,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+    
+    // 10小時以上：1.67倍
+    const hours3 = workHours - 10;
+    const endTime3 = new Date(endTime2.getTime() + hours3 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(endTime2),
+      endDateTime: formatDateTime(endTime3),
+      hours: parseFloat(hours3.toFixed(2)),
+      multiplier: 1.67,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+  }
+}
+
+function calculateWeekendOvertime(record, overtimeRecords) {
+  const workHours = record.totalWorkHours;
+  let currentStartTime = new Date(record.clockIn);
+  
+  if (workHours > 0 && workHours <= 2) {
+    // 第1-2小時：1.34倍（新規則）
+    const endTime = new Date(currentStartTime.getTime() + workHours * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(currentStartTime),
+      endDateTime: formatDateTime(endTime),
+      hours: parseFloat(workHours.toFixed(2)),
+      multiplier: 1.34,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+  } else if (workHours > 2 && workHours <= 8) {
+    // 第1-2小時：1.34倍（新規則）
+    const endTime1 = new Date(currentStartTime.getTime() + 2 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(currentStartTime),
+      endDateTime: formatDateTime(endTime1),
+      hours: 2,
+      multiplier: 1.34,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+    
+    const hours2 = workHours - 2;
+    const endTime2 = new Date(endTime1.getTime() + hours2 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(endTime1),
+      endDateTime: formatDateTime(endTime2),
+      hours: parseFloat(hours2.toFixed(2)),
+      multiplier: 1.67,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+  } else if (workHours > 8) {
+    // 第1-2小時：1.34倍（新規則）
+    const endTime1 = new Date(currentStartTime.getTime() + 2 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(currentStartTime),
+      endDateTime: formatDateTime(endTime1),
+      hours: 2,
+      multiplier: 1.34,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+    
+    const endTime2 = new Date(endTime1.getTime() + 6 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(endTime1),
+      endDateTime: formatDateTime(endTime2),
+      hours: 6,
+      multiplier: 1.67,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+    
+    const hours3 = Math.min(workHours - 8, 4);
+    const endTime3 = new Date(endTime2.getTime() + hours3 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(endTime2),
+      endDateTime: formatDateTime(endTime3),
+      hours: parseFloat(hours3.toFixed(2)),
+      multiplier: 2.67,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+  }
+}
+
+function calculateHolidayOvertime(record, overtimeRecords) {
+  const workHours = record.totalWorkHours;
+  let currentStartTime = new Date(record.clockIn);
+  
+  if (workHours > 0 && workHours <= 8) {
+    const endTime = new Date(currentStartTime.getTime() + workHours * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(currentStartTime),
+      endDateTime: formatDateTime(endTime),
+      hours: parseFloat(workHours.toFixed(2)),
+      multiplier: 2,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+  } else if (workHours > 8 && workHours <= 10) {
+    const endTime1 = new Date(currentStartTime.getTime() + 8 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(currentStartTime),
+      endDateTime: formatDateTime(endTime1),
+      hours: 8,
+      multiplier: 2,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+    
+    const hours2 = workHours - 8;
+    const endTime2 = new Date(endTime1.getTime() + hours2 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(endTime1),
+      endDateTime: formatDateTime(endTime2),
+      hours: parseFloat(hours2.toFixed(2)),
+      multiplier: 2.33,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+  } else if (workHours > 10) {
+    const endTime1 = new Date(currentStartTime.getTime() + 8 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(currentStartTime),
+      endDateTime: formatDateTime(endTime1),
+      hours: 8,
+      multiplier: 2,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+    
+    const endTime2 = new Date(endTime1.getTime() + 2 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(endTime1),
+      endDateTime: formatDateTime(endTime2),
+      hours: 2,
+      multiplier: 2.33,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+    
+    const hours3 = Math.min(workHours - 10, 2);
+    const endTime3 = new Date(endTime2.getTime() + hours3 * 60 * 60 * 1000);
+    overtimeRecords.push({
+      dateKey: record.dateKey,
+      startDateTime: formatDateTime(endTime2),
+      endDateTime: formatDateTime(endTime3),
+      hours: parseFloat(hours3.toFixed(2)),
+      multiplier: 2.67,
+      isWeekend: record.isWeekend,
+      isHoliday: record.isHoliday
+    });
+  }
+}
+
+function isWeekend(date) {
+  const day = date.getDay();
+  return day === 0 || day === 6;
+}
+
+function formatDateTime(date) {
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+}
+
+function formatDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
+// ===== 輔助功能函數 =====
+
+/**
+ * 將加班記錄寫入「加班費紀錄總表」工作表
+ */
+function writeOvertimeRecordsToSheet(overtimeRecords) {
+  try {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    let overtimeSheet = spreadsheet.getSheetByName('加班費紀錄總表');
+    
+    // 如果工作表不存在，創建它
+    if (!overtimeSheet) {
+      overtimeSheet = spreadsheet.insertSheet('加班費紀錄總表');
+      // 設置標題行
+      overtimeSheet.getRange(1, 1, 1, 5).setValues([[
+        'ID', '開始時間', '結束時間', '時數', '倍率'
+      ]]);
+      // 格式化標題行
+      const headerRange = overtimeSheet.getRange(1, 1, 1, 5);
+      headerRange.setFontWeight('bold');
+      headerRange.setBackground('#E8F4FD');
+    }
+    
+    // 清空舊資料，保留標題行
+    const lastRow = overtimeSheet.getLastRow();
+    if (lastRow > 1) {
+      overtimeSheet.getRange(2, 1, lastRow - 1, 5).clearContent();
+    }
+    
+    if (overtimeRecords.length === 0) {
+      return 0;
+    }
+    
+    // 生成序號並準備資料
+    let dayCounter = {};
+    const outputData = overtimeRecords.map(record => {
+      // 生成 YYYYMMDD_序號 格式的ID
+      const dateKey = record.dateKey;
+      if (!dayCounter[dateKey]) {
+        dayCounter[dateKey] = 1;
+      } else {
+        dayCounter[dateKey]++;
+      }
+      const recordId = `${dateKey}_${String(dayCounter[dateKey]).padStart(2, '0')}`;
+      
+      return [
+        recordId,
+        record.startDateTime,
+        record.endDateTime,
+        record.hours,
+        record.multiplier
+      ];
+    });
+    
+    // 寫入資料
+    overtimeSheet.getRange(2, 1, outputData.length, 5).setValues(outputData);
+    
+    // 設置數字格式
+    overtimeSheet.getRange(2, 4, outputData.length, 2).setNumberFormat('0.00');
+    
+    return outputData.length;
+  } catch (error) {
+    throw new Error(`寫入加班記錄失敗: ${error.message}`);
+  }
+}
+
+/**
+ * 記錄執行日誌到「執行紀錄」工作表
+ */
+function logExecution(type, source, title, scope, details) {
+  try {
+    const executionSheet = getOrCreateExecutionLogSheet();
+    const now = new Date();
+    const timestamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    
+    // 在第2行插入新記錄（保持最新記錄在最上面）
+    executionSheet.insertRowAfter(1);
+    executionSheet.getRange(2, 1, 1, 5).setValues([[
+      timestamp,
+      type || '系統',
+      title || '執行',
+      scope || '未指定',
+      details || ''
+    ]]);
+    
+    // 限制記錄行數（保留最近100筆）
+    const maxRows = 101; // 1個標題行 + 100筆記錄
+    const currentRows = executionSheet.getLastRow();
+    if (currentRows > maxRows) {
+      const rowsToDelete = currentRows - maxRows;
+      executionSheet.deleteRows(maxRows + 1, rowsToDelete);
+    }
+    
+  } catch (error) {
+    console.log(`記錄執行日誌失敗: ${error.message}`);
+  }
+}
+
+/**
+ * 取得或創建執行紀錄工作表
+ */
+function getOrCreateExecutionLogSheet() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  let executionSheet = spreadsheet.getSheetByName('執行紀錄');
+  
+  if (!executionSheet) {
+    executionSheet = spreadsheet.insertSheet('執行紀錄');
+    
+    // 設置標題行
+    executionSheet.getRange(1, 1, 1, 5).setValues([[
+      '時間', '屬性', '標題', '範圍', '詳細資訊'
+    ]]);
+    
+    // 格式化標題行
+    const headerRange = executionSheet.getRange(1, 1, 1, 5);
+    headerRange.setFontWeight('bold');
+    headerRange.setBackground('#F0F8FF');
+    
+    // 設置欄寬
+    executionSheet.setColumnWidth(1, 120); // 時間
+    executionSheet.setColumnWidth(2, 80);  // 屬性
+    executionSheet.setColumnWidth(3, 150); // 標題
+    executionSheet.setColumnWidth(4, 100); // 範圍
+    executionSheet.setColumnWidth(5, 250); // 詳細資訊
+    
+    // 凍結標題行
+    executionSheet.setFrozenRows(1);
+  }
+  
+  return executionSheet;
+}
+
+/**
+ * 從控制中樞表讀取已啟用的員工清單
+ */
+function getActiveEmployeesFromControlCenter(controlCenterId) {
+  try {
+    const controlCenter = SpreadsheetApp.openById(controlCenterId);
+    const employeeSheet = controlCenter.getSheetByName('員工清單');
+    
+    if (!employeeSheet) {
+      throw new Error('找不到「員工清單」工作表');
+    }
+    
+    const data = employeeSheet.getDataRange().getValues();
+    const activeEmployees = [];
+    
+    // 從第2行開始（跳過標題行）
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      
+      // 檢查是否有有效資料
+      if (!row[0] || !row[1] || !row[2] || !row[4]) continue;
+      
+      const employeeId = row[0].toString().trim();
+      const employeeName = row[1].toString().trim();
+      const fileId = row[2].toString().trim();
+      const status = row[4].toString().trim();
+      
+      // 只取狀態為「啟用」的員工
+      if (status === '啟用') {
+        activeEmployees.push({
+          id: employeeId,
+          name: employeeName,
+          fileId: fileId,
+          status: status
         });
       }
     }
     
-    monthlySheets.sort((a, b) => a.month - b.month);
-    return monthlySheets;
+    return activeEmployees;
   } catch (error) {
-    throw new Error(`無法存取員工檔案: ${error.message}`);
+    throw new Error(`讀取控制中樞表員工清單失敗: ${error.message}`);
   }
 }
 
-function extractOvertimeData(sheet, monthName, employeeId) {
+/**
+ * 將加班記錄寫入員工個人試算表的「加班費紀錄總表」
+ */
+function writeOvertimeRecordsToEmployeeSheet(overtimeRecords, employeeFileId) {
   try {
-    const data = sheet.getDataRange().getValues();
-    const overtimeRecords = [];
+    const employeeSpreadsheet = SpreadsheetApp.openById(employeeFileId);
+    let overtimeSheet = employeeSpreadsheet.getSheetByName('加班費紀錄總表');
     
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      const date = row[1];
-      const dayOfWeek = row[2];
-      const dayType = row[3] || '';
-      const overtimeHours = parseFloat(row[10]) || 0; // 修正：當日加班時數是第11欄（索引10）
-      const note = row[11] || ''; // 修正：備註是第12欄（索引11）
-      
-      if (date && overtimeHours > 0) {
-        let dateObj;
-        let formattedDate;
-        
-        // 更安全的日期處理 - 專為 Google Apps Script 優化
-        if (date instanceof Date) {
-          // 使用 Google Apps Script 的 Utilities.formatDate 避免時區問題
-          try {
-            formattedDate = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-            dateObj = date;
-          } catch (error) {
-            // 如果 Utilities.formatDate 失敗，回退到手動處理
-            dateObj = date;
-            formattedDate = formatDate(dateObj);
-          }
-        } else if (typeof date === 'string') {
-          // 如果是字符串，嘗試解析
-          if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            // 已經是正確格式的字符串
-            formattedDate = date;
-            dateObj = new Date(date + 'T12:00:00'); // 添加中午時間避免時區問題
-          } else {
-            // 嘗試解析其他格式
-            dateObj = new Date(date);
-            if (isValidDate(dateObj)) {
-              try {
-                formattedDate = Utilities.formatDate(dateObj, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-              } catch (error) {
-                formattedDate = formatDate(dateObj);
-              }
-            } else {
-              continue; // 跳過無效日期
-            }
-          }
-        } else {
-          continue; // 跳過無效日期格式
-        }
-        
-        if (formattedDate && isValidDate(dateObj)) {
-          let overtimeType = '';
-          if (dayType.includes('例假日')) {
-            overtimeType = '例假日';
-          } else if (dayType.includes('休息日') || dayOfWeek === '6' || dayOfWeek === '7') {
-            overtimeType = '假日';
-          } else if (dayType.includes('上班日加班')) {
-            overtimeType = '上班日加班';
-          } else if (dayType.includes('上班日')) {
-            overtimeType = '上班日';
-          } else {
-            overtimeType = '平日';
-          }
-          
-          overtimeRecords.push({
-            employeeId: employeeId,
-            date: formattedDate,
-            hours: overtimeHours,
-            type: overtimeType,
-            note: note,
-            sourceMonth: monthName,
-            dayOfWeek: typeof dayOfWeek === 'number' ? getDayOfWeek(dateObj) : dayOfWeek
-          });
-        }
-      }
-    }
-    
-    return overtimeRecords;
-  } catch (error) {
-    throw new Error(`分頁資料提取失敗: ${error.message}`);
-  }
-}
-
-function addOvertimeRecord(record) {
-  const sheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_SUMMARY);
-  const employeeName = getEmployeeName(record.employeeId);
-  const overtimeId = generateOvertimeId(record.date, record.employeeId);
-  
-  // 例假日加班處理邏輯
-  let remainingHours, status;
-  if (record.type === '例假日') {
-    // 例假日加班不可補休
-    remainingHours = 0;
-    status = '例假日-僅發加班費';
-  } else {
-    // 一般加班可以補休
-    remainingHours = record.hours;
-    status = '未使用';
-  }
-  
-  const newRow = [
-    overtimeId,
-    record.employeeId,
-    employeeName,
-    record.date,
-    record.dayOfWeek,
-    record.type,
-    record.hours,
-    0, // 已使用補休
-    remainingHours, // 剩餘可補休
-    status, // 狀態
-    record.sourceMonth,
-    '', // 用掉補休編號
-    '' // 錯誤提示
-  ];
-  
-  sheet.appendRow(newRow);
-  
-  // 同步到員工個人加班表
-  const employeeInfo = getEmployeeInfo(record.employeeId);
-  if (employeeInfo) {
-    syncOvertimeToPersonalSheet(employeeInfo.fileId, {
-      overtimeId: overtimeId,
-      employeeId: record.employeeId,
-      employeeName: employeeName,
-      date: record.date,
-      dayOfWeek: record.dayOfWeek,
-      type: record.type,
-      hours: record.hours,
-      usedHours: 0,
-      remainingHours: remainingHours,
-      status: status,
-      sourceMonth: record.sourceMonth,
-      usedLeaveIds: ''
-    });
-  }
-}
-
-// ===== 反向驗證 =====
-
-function validateOvertimeRecords() {
-  try {
-    const sheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_SUMMARY);
-    const data = sheet.getDataRange().getValues();
-    let errorCount = 0;
-    
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      const employeeId = row[1];
-      const date = row[3];
-      const sourceMonth = row[10];
-      
-      try {
-        const employee = getEmployeeInfo(employeeId);
-        if (!employee) {
-          markRecordError(sheet, i + 1, '找不到員工資料');
-          errorCount++;
-          continue;
-        }
-        
-        const found = verifyRecordInEmployeeFile(employee.fileId, sourceMonth, date);
-        if (!found) {
-          markRecordError(sheet, i + 1, '員工檔案中找不到對應資料');
-          errorCount++;
-        } else {
-          // 驗證成功時清空錯誤訊息
-          markRecordError(sheet, i + 1, '');
-        }
-      } catch (error) {
-        markRecordError(sheet, i + 1, `驗證失敗: ${error.message}`);
-        errorCount++;
-      }
-    }
-    
-    return errorCount;
-  } catch (error) {
-    logError('反向驗證失敗', '系統', error.message);
-    return 0;
-  }
-}
-
-// ===== 補休配對 =====
-
-function matchLeaveWithOvertime() {
-  try {
-    const leaveSheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_DETAILS);
-    const leaveData = leaveSheet.getDataRange().getValues();
-    
-    let matchedCount = 0;
-    let errorCount = 0;
-    
-    for (let i = 1; i < leaveData.length; i++) {
-      const row = leaveData[i];
-      const employeeId = row[1];
-      const leaveHours = parseFloat(row[5]) || 0;
-      const existingOvertimeId = row[6];
-      
-      if (!existingOvertimeId || existingOvertimeId === '') {
-        try {
-          const leaveId = row[0]; // 補休編號
-          const result = allocateLeaveToOvertime(employeeId, leaveHours, leaveId);
-          if (result.success) {
-            updateLeaveRecord(leaveSheet, i + 1, result.overtimeIds.join(','));
-            matchedCount++;
-          } else {
-            markLeaveError(leaveSheet, i + 1, result.error);
-            errorCount++;
-          }
-        } catch (error) {
-          markLeaveError(leaveSheet, i + 1, error.message);
-          errorCount++;
-        }
-      }
-    }
-    
-    return { matched: matchedCount, errors: errorCount };
-  } catch (error) {
-    logError('補休配對失敗', '系統', error.message);
-    return { matched: 0, errors: 1 };
-  }
-}
-
-function allocateLeaveToOvertime(employeeId, leaveHours, leaveId = '') {
-  const overtimeSheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_SUMMARY);
-  const data = overtimeSheet.getDataRange().getValues();
-  
-  const availableRecords = [];
-  
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    if (row[1] === employeeId && 
-        parseFloat(row[8]) > 0 && 
-        row[9] !== '例假日-僅發加班費') { // 排除例假日加班記錄
-      availableRecords.push({
-        rowIndex: i + 1,
-        overtimeId: row[0],
-        date: row[3],
-        totalHours: parseFloat(row[6]),
-        usedHours: parseFloat(row[7]),
-        remainingHours: parseFloat(row[8])
-      });
-    }
-  }
-  
-  availableRecords.sort((a, b) => new Date(a.date) - new Date(b.date));
-  
-  let remainingLeaveHours = leaveHours;
-  const usedOvertimeIds = [];
-  
-  for (const record of availableRecords) {
-    if (remainingLeaveHours <= 0) break;
-    
-    const allocatedHours = Math.min(remainingLeaveHours, record.remainingHours);
-    const newUsedHours = record.usedHours + allocatedHours;
-    const newRemainingHours = record.remainingHours - allocatedHours;
-    
-    let status = '未使用';
-    if (newRemainingHours === 0) {
-      status = '已全數使用';
-    } else if (newUsedHours > 0) {
-      status = '部分使用';
-    }
-    
-    overtimeSheet.getRange(record.rowIndex, 8).setValue(newUsedHours);
-    overtimeSheet.getRange(record.rowIndex, 9).setValue(newRemainingHours);
-    overtimeSheet.getRange(record.rowIndex, 10).setValue(status);
-    
-    // 回寫補休編號到加班記錄總表
-    if (leaveId) {
-      writeLeaveIdToOvertimeRecord(overtimeSheet, record.rowIndex, leaveId);
-      
-      // 同時回寫到員工個人月份分頁和個人加班表
-      const employeeInfo = getEmployeeInfo(employeeId);
-      if (employeeInfo) {
-        const sourceMonth = data[record.rowIndex - 1][10]; // 資料來源月份
-        writeLeaveIdToEmployeeSheet(employeeId, employeeInfo.fileId, record.date, sourceMonth, leaveId);
-        
-        // 同步更新個人加班表
-        const usedLeaveIdsCell = overtimeSheet.getRange(record.rowIndex, 12).getValue() || '';
-        updatePersonalOvertimeSheet(
-          employeeInfo.fileId,
-          record.overtimeId,
-          newUsedHours,
-          newRemainingHours,
-          status,
-          usedLeaveIdsCell
-        );
-      }
-    }
-    
-    usedOvertimeIds.push(record.overtimeId);
-    remainingLeaveHours -= allocatedHours;
-  }
-  
-  if (remainingLeaveHours > 0) {
-    return {
-      success: false,
-      error: `補休時數超過可用加班時數 (超過 ${remainingLeaveHours} 小時)`
-    };
-  }
-  
-  return {
-    success: true,
-    overtimeIds: usedOvertimeIds
-  };
-}
-
-// ===== 工具函數 =====
-
-function getMasterSheet(sheetName) {
-  const ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) {
-    throw new Error(`找不到工作表: ${sheetName}`);
-  }
-  return sheet;
-}
-
-function getEmployeeSheet(fileId, sheetName) {
-  const ss = SpreadsheetApp.openById(fileId);
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) {
-    throw new Error(`找不到工作表: ${sheetName}`);
-  }
-  return sheet;
-}
-
-function generateOvertimeId(date, employeeId) {
-  const dateStr = date.replace(/-/g, '');
-  const existingIds = getExistingOvertimeIds(date, employeeId);
-  const sequence = existingIds.length + 1;
-  return `OT-${dateStr}-${employeeId}-${sequence}`;
-}
-
-function getExistingOvertimeIds(date, employeeId) {
-  const sheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_SUMMARY);
-  const data = sheet.getDataRange().getValues();
-  const ids = [];
-  
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    // 確保日期格式一致的比對
-    const existingDate = typeof row[3] === 'string' ? row[3] : formatDate(new Date(row[3]));
-    if (row[1] === employeeId && existingDate === date) {
-      ids.push(row[0]);
-    }
-  }
-  
-  return ids;
-}
-
-function getActiveEmployees() {
-  const sheet = getMasterSheet(CONFIG.SHEETS.EMPLOYEES);
-  const data = sheet.getDataRange().getValues();
-  const employees = [];
-  
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    if (row[4] === '啟用') {
-      employees.push({
-        id: row[0],
-        name: row[1],
-        fileId: row[2],
-        status: row[4]
-      });
-    }
-  }
-  
-  return employees;
-}
-
-function getEmployeeInfo(employeeId) {
-  const sheet = getMasterSheet(CONFIG.SHEETS.EMPLOYEES);
-  const data = sheet.getDataRange().getValues();
-  
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    if (row[0] === employeeId) {
-      return {
-        id: row[0],
-        name: row[1],
-        fileId: row[2],
-        status: row[4]
-      };
-    }
-  }
-  
-  return null;
-}
-
-function getEmployeeName(employeeId) {
-  const employee = getEmployeeInfo(employeeId);
-  return employee ? employee.name : '未知員工';
-}
-
-function overtimeRecordExists(employeeId, date) {
-  const sheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_SUMMARY);
-  const data = sheet.getDataRange().getValues();
-  
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    // 確保日期格式一致的比對
-    const existingDate = typeof row[3] === 'string' ? row[3] : formatDate(new Date(row[3]));
-    if (row[1] === employeeId && existingDate === date) {
-      return true;
-    }
-  }
-  
-  return false;
-}
-
-function verifyRecordInEmployeeFile(fileId, sourceMonth, date) {
-  try {
-    // 將傳入的 date 統一轉換為字串格式
-    let targetDate;
-    if (date instanceof Date) {
-      try {
-        targetDate = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-      } catch (error) {
-        targetDate = formatDate(date);
-      }
-    } else if (typeof date === 'string') {
-      targetDate = date;
-    } else {
-      return false; // 無效的日期格式
-    }
-    
-    const sheet = getEmployeeSheet(fileId, sourceMonth);
-    const data = sheet.getDataRange().getValues();
-    
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      let rowDate;
-      
-      // 處理不同的日期格式
-      if (row[1] instanceof Date) {
-        try {
-          rowDate = Utilities.formatDate(row[1], Session.getScriptTimeZone(), 'yyyy-MM-dd');
-        } catch (error) {
-          rowDate = formatDate(row[1]);
-        }
-      } else if (typeof row[1] === 'string') {
-        // 如果是字串，嘗試解析
-        if (/^\d{4}-\d{2}-\d{2}$/.test(row[1])) {
-          rowDate = row[1]; // 已經是正確格式
-        } else {
-          const parsedDate = new Date(row[1]);
-          if (isValidDate(parsedDate)) {
-            try {
-              rowDate = Utilities.formatDate(parsedDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-            } catch (error) {
-              rowDate = formatDate(parsedDate);
-            }
-          } else {
-            rowDate = row[1]; // 保持原始字串格式
-          }
-        }
-      } else {
-        continue; // 跳過無效的日期格式
-      }
-      
-      if (rowDate === targetDate && parseFloat(row[10]) > 0) { // 加班時數在第11欄（索引10）
-        return true;
-      }
-    }
-    
-    return false;
-  } catch (error) {
-    return false;
-  }
-}
-
-function markRecordError(sheet, rowIndex, errorMessage) {
-  sheet.getRange(rowIndex, 13).setValue(errorMessage);
-}
-
-function markLeaveError(sheet, rowIndex, errorMessage) {
-  sheet.getRange(rowIndex, 10).setValue(errorMessage);
-}
-
-function updateLeaveRecord(sheet, rowIndex, overtimeIds) {
-  sheet.getRange(rowIndex, 7).setValue(overtimeIds);
-}
-
-function logError(type, employeeId, message) {
-  try {
-    const sheet = getMasterSheet(CONFIG.SHEETS.EXECUTION_LOG);
-    const timestamp = new Date();
-    const newRow = [timestamp, 'ERROR', type, employeeId, message, ''];
-    sheet.appendRow(newRow);
-    Logger.log(`ERROR: ${type} - ${employeeId}: ${message}`);
-  } catch (error) {
-    Logger.log(`記錄錯誤失敗: ${error.message}`);
-  }
-}
-
-function logExecution(type, employeeId, message) {
-  try {
-    const sheet = getMasterSheet(CONFIG.SHEETS.EXECUTION_LOG);
-    const timestamp = new Date();
-    const newRow = [timestamp, 'INFO', type, employeeId, message, ''];
-    sheet.appendRow(newRow);
-  } catch (error) {
-    Logger.log(`記錄執行日誌失敗: ${error.message}`);
-  }
-}
-
-function isValidDate(date) {
-  return date instanceof Date && !isNaN(date);
-}
-
-function formatDate(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function formatDateSafe(date) {
-  try {
-    // 處理時區問題：使用 UTC 方法或本地偏移
-    if (date instanceof Date) {
-      // 檢查是否為有效的日期對象
-      if (isNaN(date.getTime())) {
-        return null;
-      }
-      
-      // 如果是 Google Sheets 的日期（可能有時區偏移），使用 UTC
-      const timezoneOffset = date.getTimezoneOffset();
-      const adjustedDate = new Date(date.getTime() + (timezoneOffset * 60000));
-      
-      const year = adjustedDate.getFullYear();
-      const month = String(adjustedDate.getMonth() + 1).padStart(2, '0');
-      const day = String(adjustedDate.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-function getDayOfWeek(date) {
-  const days = ['日', '一', '二', '三', '四', '五', '六'];
-  return days[date.getDay()];
-}
-
-// ===== 個人補休表同步功能 =====
-
-function syncPersonalLeaveRequests() {
-  try {
-    const startTime = new Date();
-    logExecution('開始', '系統', '開始執行個人補休表同步');
-    
-    let syncedCount = 0;
-    let errorCount = 0;
-    
-    const employees = getActiveEmployees();
-    
-    for (const employee of employees) {
-      try {
-        const leaveRequests = scanPersonalLeaveSheet(employee.fileId);
-        
-        for (const request of leaveRequests) {
-          try {
-            const leaveId = generateLeaveId(request.applicationDate, employee.id);
-            const leaveRequest = {
-              leaveId: leaveId,
-              employeeId: employee.id,
-              employeeName: employee.name,
-              applicationDate: request.applicationDate,
-              leaveDate: request.leaveDate,
-              startTime: request.startTime,
-              endTime: request.endTime,
-              hours: request.hours,
-              note: request.note
-            };
-            
-            const result = addLeaveRequestToMaster(leaveRequest);
-            if (result.success) {
-              writeLeaveIdToPersonalSheet(employee.fileId, request.rowIndex, leaveId);
-              syncedCount++;
-            } else {
-              errorCount++;
-              logError('補休申請同步失敗', employee.id, result.error);
-            }
-          } catch (error) {
-            errorCount++;
-            logError('個人補休處理失敗', employee.id, error.message);
-          }
-        }
-        
-        logExecution('處理', employee.id, `個人補休表同步完成 - 新增 ${leaveRequests.length} 筆申請`);
-      } catch (error) {
-        errorCount++;
-        logError('員工補休表存取失敗', employee.id, error.message);
-      }
-    }
-    
-    const endTime = new Date();
-    const duration = (endTime - startTime) / 1000;
-    
-    const report = `個人補休表同步完成：同步 ${syncedCount} 筆，錯誤 ${errorCount} 筆，耗時 ${duration} 秒`;
-    logExecution('完成', '系統', report);
-    
-    return { syncedCount, errorCount, duration };
-  } catch (error) {
-    logError('個人補休表同步失敗', '系統', error.message);
-    throw error;
-  }
-}
-
-function scanPersonalLeaveSheet(fileId) {
-  try {
-    const sheet = getEmployeeSheet(fileId, CONFIG.SHEETS.PERSONAL_LEAVE);
-    const data = sheet.getDataRange().getValues();
-    const leaveRequests = [];
-    
-    Logger.log(`掃描個人補休表，共 ${data.length - 1} 筆資料`);
-    
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      const leaveId = row[0]; // 補休編號
-      const employeeId = row[1]; // 員工編號
-      const employeeName = row[2]; // 姓名
-      const applicationDate = row[3]; // 申請日期
-      const leaveDate = row[4]; // 補休日期
-      const startTime = row[5]; // 開始時間
-      const endTime = row[6]; // 結束時間
-      const hours = parseFloat(row[7]) || 0; // 使用時數
-      const overtimeIds = row[8] || ''; // 對應加班編號
-      const note = row[9] || ''; // 備註
-      
-      Logger.log(`第${i+1}列: 補休編號=[${leaveId}], 員工編號=[${employeeId}], 申請日期=[${applicationDate}], 補休日期=[${leaveDate}], 時數=[${hours}]`);
-      
-      // 只處理尚未同步的記錄（補休編號為空）
-      if (!leaveId && applicationDate && leaveDate && hours > 0) {
-        let appDateFormatted, lvDateFormatted;
-        let appDateObj, lvDateObj;
-        
-        // 安全的申請日期處理
-        if (applicationDate instanceof Date) {
-          try {
-            appDateFormatted = Utilities.formatDate(applicationDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-            appDateObj = applicationDate;
-          } catch (error) {
-            appDateFormatted = formatDate(applicationDate);
-            appDateObj = applicationDate;
-          }
-        } else if (typeof applicationDate === 'string') {
-          if (/^\d{4}-\d{2}-\d{2}$/.test(applicationDate)) {
-            appDateFormatted = applicationDate;
-            appDateObj = new Date(applicationDate + 'T12:00:00');
-          } else {
-            appDateObj = new Date(applicationDate);
-            if (isValidDate(appDateObj)) {
-              try {
-                appDateFormatted = Utilities.formatDate(appDateObj, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-              } catch (error) {
-                appDateFormatted = formatDate(appDateObj);
-              }
-            } else {
-              appDateFormatted = null;
-            }
-          }
-        } else {
-          appDateFormatted = null;
-        }
-        
-        // 安全的補休日期處理
-        if (leaveDate instanceof Date) {
-          try {
-            lvDateFormatted = Utilities.formatDate(leaveDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-            lvDateObj = leaveDate;
-          } catch (error) {
-            lvDateFormatted = formatDate(leaveDate);
-            lvDateObj = leaveDate;
-          }
-        } else if (typeof leaveDate === 'string') {
-          if (/^\d{4}-\d{2}-\d{2}$/.test(leaveDate)) {
-            lvDateFormatted = leaveDate;
-            lvDateObj = new Date(leaveDate + 'T12:00:00');
-          } else {
-            lvDateObj = new Date(leaveDate);
-            if (isValidDate(lvDateObj)) {
-              try {
-                lvDateFormatted = Utilities.formatDate(lvDateObj, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-              } catch (error) {
-                lvDateFormatted = formatDate(lvDateObj);
-              }
-            } else {
-              lvDateFormatted = null;
-            }
-          }
-        } else {
-          lvDateFormatted = null;
-        }
-        
-        Logger.log(`檢查日期有效性: 申請日期=${appDateFormatted}, 補休日期=${lvDateFormatted}`);
-        
-        if (appDateFormatted && lvDateFormatted && isValidDate(appDateObj) && isValidDate(lvDateObj)) {
-          leaveRequests.push({
-            rowIndex: i + 1,
-            employeeId: employeeId,
-            employeeName: employeeName,
-            applicationDate: appDateFormatted,
-            leaveDate: lvDateFormatted,
-            startTime: startTime,
-            endTime: endTime,
-            hours: hours,
-            note: note
-          });
-          Logger.log(`✅ 加入處理清單: 第${i+1}列`);
-        } else {
-          Logger.log(`❌ 日期格式無效: 第${i+1}列`);
-        }
-      } else {
-        Logger.log(`❌ 跳過第${i+1}列 - 補休編號=${leaveId ? '已有' : '空'}, 申請日期=${applicationDate ? '有' : '無'}, 補休日期=${leaveDate ? '有' : '無'}, 時數=${hours}`);
-      }
-    }
-    
-    Logger.log(`掃描完成，找到 ${leaveRequests.length} 筆待處理記錄`);
-    return leaveRequests;
-  } catch (error) {
-    // 如果找不到個人補休表分頁，返回空陣列
-    if (error.message.includes('找不到工作表')) {
-      Logger.log(`員工檔案中沒有「${CONFIG.SHEETS.PERSONAL_LEAVE}」工作表，跳過處理`);
-      return [];
-    }
-    throw new Error(`掃描個人補休表失敗: ${error.message}`);
-  }
-}
-
-function generateLeaveId(date, employeeId) {
-  const dateStr = date.replace(/-/g, '');
-  const existingIds = getExistingLeaveIds(date, employeeId);
-  const sequence = existingIds.length + 1;
-  return `LV-${dateStr}-${employeeId}-${sequence}`;
-}
-
-function getExistingLeaveIds(date, employeeId) {
-  try {
-    const sheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_DETAILS);
-    const data = sheet.getDataRange().getValues();
-    const ids = [];
-    
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      if (row[1] === employeeId) {
-        const leaveId = row[0];
-        if (leaveId && leaveId.includes(date.replace(/-/g, ''))) {
-          ids.push(leaveId);
-        }
-      }
-    }
-    
-    return ids;
-  } catch (error) {
-    return [];
-  }
-}
-
-function addLeaveRequestToMaster(leaveRequest) {
-  try {
-    // 先進行自動配對
-    const allocationResult = allocateLeaveToOvertime(leaveRequest.employeeId, leaveRequest.hours, leaveRequest.leaveId);
-    
-    const sheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_DETAILS);
-    
-    let overtimeIds = '';
-    let error = '';
-    
-    if (allocationResult.success) {
-      overtimeIds = allocationResult.overtimeIds.join(',');
-    } else {
-      error = allocationResult.error;
-    }
-    
-    const newRow = [
-      leaveRequest.leaveId,
-      leaveRequest.employeeId,
-      leaveRequest.employeeName,
-      leaveRequest.applicationDate,
-      leaveRequest.leaveDate,
-      leaveRequest.startTime || '', // 開始時間
-      leaveRequest.endTime || '', // 結束時間
-      leaveRequest.hours,
-      overtimeIds, // 對應加班編號
-      leaveRequest.note,
-      false, // 行政組查閱打勾（核選方框）
-      error // 錯誤提示
-    ];
-    
-    sheet.appendRow(newRow);
-    
-    return allocationResult;
-  } catch (error) {
-    throw new Error(`新增補休申請失敗: ${error.message}`);
-  }
-}
-
-function writeLeaveIdToPersonalSheet(fileId, rowIndex, leaveId) {
-  try {
-    const sheet = getEmployeeSheet(fileId, CONFIG.SHEETS.PERSONAL_LEAVE);
-    sheet.getRange(rowIndex, 1).setValue(leaveId); // 第1欄是補休編號
-    return true;
-  } catch (error) {
-    logError('回寫補休編號失敗', fileId, error.message);
-    return false;
-  }
-}
-
-function writeLeaveIdToOvertimeRecord(overtimeSheet, rowIndex, leaveId) {
-  try {
-    const currentCell = overtimeSheet.getRange(rowIndex, 12); // 第12欄是用掉補休編號
-    const currentValue = currentCell.getValue() || '';
-    
-    let newValue;
-    if (currentValue === '') {
-      newValue = leaveId;
-    } else {
-      // 如果已有補休編號，用逗號分隔
-      const existingIds = currentValue.split(',');
-      if (!existingIds.includes(leaveId)) {
-        existingIds.push(leaveId);
-        newValue = existingIds.join(',');
-      } else {
-        newValue = currentValue; // 不重複新增
-      }
-    }
-    
-    currentCell.setValue(newValue);
-    return true;
-  } catch (error) {
-    logError('回寫補休編號到加班記錄失敗', 'system', error.message);
-    return false;
-  }
-}
-
-function writeLeaveIdToEmployeeSheet(employeeId, fileId, date, sourceMonth, leaveId) {
-  try {
-    const sheet = getEmployeeSheet(fileId, sourceMonth);
-    const data = sheet.getDataRange().getValues();
-    
-    // 找到對應日期的列
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      let rowDate;
-      
-      if (row[1] instanceof Date) {
-        try {
-          rowDate = Utilities.formatDate(row[1], Session.getScriptTimeZone(), 'yyyy-MM-dd');
-        } catch (error) {
-          rowDate = formatDate(row[1]);
-        }
-      } else if (typeof row[1] === 'string') {
-        if (/^\d{4}-\d{2}-\d{2}$/.test(row[1])) {
-          rowDate = row[1]; // 已經是正確格式
-        } else {
-          const parsedDate = new Date(row[1]);
-          if (isValidDate(parsedDate)) {
-            try {
-              rowDate = Utilities.formatDate(parsedDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-            } catch (error) {
-              rowDate = formatDate(parsedDate);
-            }
-          } else {
-            rowDate = row[1];
-          }
-        }
-      } else {
-        continue;
-      }
-      
-      if (rowDate === date) {
-        // 在備註欄（第13欄）加入補休編號
-        const noteCell = sheet.getRange(i + 1, 13);
-        const currentNote = noteCell.getValue() || '';
-        
-        let newNote;
-        if (currentNote === '') {
-          newNote = `補休編號:${leaveId}`;
-        } else {
-          if (!currentNote.includes(leaveId)) {
-            newNote = `${currentNote}; 補休編號:${leaveId}`;
-          } else {
-            newNote = currentNote; // 不重複新增
-          }
-        }
-        
-        noteCell.setValue(newNote);
-        return true;
-      }
-    }
-    
-    return false; // 找不到對應日期
-  } catch (error) {
-    logError('回寫補休編號到員工表格失敗', employeeId, error.message);
-    return false;
-  }
-}
-
-// ===== 個人加班表同步 =====
-
-function syncOvertimeToPersonalSheet(fileId, overtimeRecord) {
-  try {
-    const ss = SpreadsheetApp.openById(fileId);
-    let personalOvertimeSheet = ss.getSheetByName(CONFIG.SHEETS.PERSONAL_OVERTIME);
-    
-    // 如果個人加班表不存在，則建立它
-    if (!personalOvertimeSheet) {
-      personalOvertimeSheet = ss.insertSheet(CONFIG.SHEETS.PERSONAL_OVERTIME);
-      
-      // 建立標題列
-      const headers = [
-        '加班編號',
-        '員工編號',
-        '姓名',
-        '日期',
-        '星期',
-        '加班類型',
-        '加班時數',
-        '已使用補休',
-        '剩餘可補休',
-        '狀態',
-        '資料來源月份',
-        '用掉補休編號'
-      ];
-      personalOvertimeSheet.appendRow(headers);
-      
-      // 設定標題列格式
-      const headerRange = personalOvertimeSheet.getRange(1, 1, 1, headers.length);
+    // 如果工作表不存在，創建它
+    if (!overtimeSheet) {
+      overtimeSheet = employeeSpreadsheet.insertSheet('加班費紀錄總表');
+      // 設置標題行（與OvertimeCalculator.gs一致）
+      overtimeSheet.getRange(1, 1, 1, 5).setValues([[
+        'ID', '開始時間', '結束時間', '時數', '倍率'
+      ]]);
+      // 格式化標題行
+      const headerRange = overtimeSheet.getRange(1, 1, 1, 5);
       headerRange.setFontWeight('bold');
-      headerRange.setBackground('#f3f3f3');
-      
-      Logger.log(`✅ 已為員工 ${overtimeRecord.employeeId} 建立「${CONFIG.SHEETS.PERSONAL_OVERTIME}」工作表`);
+      headerRange.setBackground('#E8F4FD');
     }
     
-    // 檢查該加班編號是否已存在
-    const data = personalOvertimeSheet.getDataRange().getValues();
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][0] === overtimeRecord.overtimeId) {
-        Logger.log(`個人加班表已存在記錄: ${overtimeRecord.overtimeId}`);
-        return; // 已存在，不重複新增
-      }
+    // 清空舊資料，保留標題行
+    const lastRow = overtimeSheet.getLastRow();
+    if (lastRow > 1) {
+      overtimeSheet.getRange(2, 1, lastRow - 1, 5).clearContent();
     }
     
-    // 新增記錄到個人加班表
-    const newRow = [
-      overtimeRecord.overtimeId,
-      overtimeRecord.employeeId,
-      overtimeRecord.employeeName,
-      overtimeRecord.date,
-      overtimeRecord.dayOfWeek,
-      overtimeRecord.type,
-      overtimeRecord.hours,
-      overtimeRecord.usedHours,
-      overtimeRecord.remainingHours,
-      overtimeRecord.status,
-      overtimeRecord.sourceMonth,
-      overtimeRecord.usedLeaveIds
-    ];
-    
-    personalOvertimeSheet.appendRow(newRow);
-    Logger.log(`✅ 已同步加班記錄到個人加班表: ${overtimeRecord.overtimeId}`);
-    
-    return true;
-  } catch (error) {
-    logError('同步到個人加班表失敗', overtimeRecord.employeeId, error.message);
-    return false;
-  }
-}
-
-function updatePersonalOvertimeSheet(fileId, overtimeId, usedHours, remainingHours, status, usedLeaveIds) {
-  try {
-    const ss = SpreadsheetApp.openById(fileId);
-    const personalOvertimeSheet = ss.getSheetByName(CONFIG.SHEETS.PERSONAL_OVERTIME);
-    
-    if (!personalOvertimeSheet) {
-      Logger.log(`找不到「${CONFIG.SHEETS.PERSONAL_OVERTIME}」工作表，跳過更新`);
-      return false;
+    if (overtimeRecords.length === 0) {
+      return 0;
     }
     
-    const data = personalOvertimeSheet.getDataRange().getValues();
-    
-    // 找到對應的加班記錄並更新
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][0] === overtimeId) {
-        personalOvertimeSheet.getRange(i + 1, 8).setValue(usedHours); // 已使用補休
-        personalOvertimeSheet.getRange(i + 1, 9).setValue(remainingHours); // 剩餘可補休
-        personalOvertimeSheet.getRange(i + 1, 10).setValue(status); // 狀態
-        
-        // 更新用掉補休編號
-        if (usedLeaveIds) {
-          const currentCell = personalOvertimeSheet.getRange(i + 1, 12);
-          const currentValue = currentCell.getValue() || '';
-          
-          if (currentValue === '') {
-            currentCell.setValue(usedLeaveIds);
-          } else {
-            // 合併補休編號（避免重複）
-            const existingIds = currentValue.split(',').map(id => id.trim());
-            const newIds = usedLeaveIds.split(',').map(id => id.trim());
-            
-            newIds.forEach(id => {
-              if (!existingIds.includes(id)) {
-                existingIds.push(id);
-              }
-            });
-            
-            currentCell.setValue(existingIds.join(','));
-          }
-        }
-        
-        Logger.log(`✅ 已更新個人加班表記錄: ${overtimeId}`);
-        return true;
-      }
-    }
-    
-    Logger.log(`在個人加班表中找不到記錄: ${overtimeId}`);
-    return false;
-  } catch (error) {
-    logError('更新個人加班表失敗', fileId, error.message);
-    return false;
-  }
-}
-
-// ===== 測試與驗證函數 =====
-
-function debugPersonalLeaveSheet() {
-  const fileId = '1g82f-yigavTtmL3YABxINFaXHerDppve9Ol0CM7aHVo';
-  
-  try {
-    const ss = SpreadsheetApp.openById(fileId);
-    const sheets = ss.getSheets();
-    
-    Logger.log(`試算表共有 ${sheets.length} 個工作表:`);
-    sheets.forEach((sheet, index) => {
-      Logger.log(`${index + 1}. ${sheet.getName()}`);
-    });
-    
-    // 尋找個人補休表
-    const personalLeaveSheet = ss.getSheetByName(CONFIG.SHEETS.PERSONAL_LEAVE);
-    if (!personalLeaveSheet) {
-      Logger.log(`❌ 找不到「${CONFIG.SHEETS.PERSONAL_LEAVE}」工作表`);
-      return;
-    }
-    
-    Logger.log(`✅ 找到「${CONFIG.SHEETS.PERSONAL_LEAVE}」工作表`);
-    
-    // 讀取前 3 列來檢查結構 (擴展到15欄)
-    const data = personalLeaveSheet.getRange(1, 1, 3, 15).getValues();
-    
-    Logger.log('=== 個人補休表結構 ===');
-    Logger.log('標題列 (第1列):');
-    data[0].forEach((cell, index) => {
-      Logger.log(`欄位 ${index}: [${cell}]`);
-    });
-    
-    if (data.length > 1) {
-      Logger.log('資料列 (第2列):');
-      data[1].forEach((cell, index) => {
-        Logger.log(`欄位 ${index}: [${cell}]`);
-      });
-    }
-    
-    if (data.length > 2) {
-      Logger.log('資料列 (第3列):');
-      data[2].forEach((cell, index) => {
-        Logger.log(`欄位 ${index}: [${cell}]`);
-      });
-    }
-    
-    Logger.log(`總共有 ${personalLeaveSheet.getLastRow()} 列資料`);
-    
-  } catch (error) {
-    Logger.log(`❌ 檢查失敗: ${error.message}`);
-  }
-}
-
-function validateSystemSetup() {
-  const results = {
-    success: true,
-    errors: [],
-    warnings: []
-  };
-  
-  try {
-    const masterSS = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
-    Logger.log('✅ 主控台連接成功');
-    
-    const requiredSheets = Object.values(CONFIG.SHEETS);
-    for (const sheetName of requiredSheets) {
-      const sheet = masterSS.getSheetByName(sheetName);
-      if (!sheet) {
-        results.errors.push(`缺少必要工作表: ${sheetName}`);
-        results.success = false;
+    // 生成序號並準備資料
+    let dayCounter = {};
+    const outputData = overtimeRecords.map(record => {
+      // 生成 YYYYMMDD_序號 格式的ID
+      const dateKey = record.dateKey;
+      if (!dayCounter[dateKey]) {
+        dayCounter[dateKey] = 1;
       } else {
-        Logger.log(`✅ 工作表 "${sheetName}" 存在`);
+        dayCounter[dateKey]++;
       }
-    }
+      const recordId = `${dateKey}_${String(dayCounter[dateKey]).padStart(2, '0')}`;
+      
+      return [
+        recordId,
+        record.startDateTime,
+        record.endDateTime,
+        record.hours,
+        record.multiplier
+      ];
+    });
     
-    const employees = getActiveEmployees();
-    Logger.log(`✅ 找到 ${employees.length} 位啟用員工`);
+    // 寫入資料
+    overtimeSheet.getRange(2, 1, outputData.length, 5).setValues(outputData);
     
-    let accessibleCount = 0;
-    for (const employee of employees) {
-      try {
-        SpreadsheetApp.openById(employee.fileId);
-        accessibleCount++;
-      } catch (error) {
-        results.warnings.push(`無法存取員工 ${employee.id} 的檔案: ${error.message}`);
-      }
-    }
+    // 設置數字格式
+    overtimeSheet.getRange(2, 4, outputData.length, 2).setNumberFormat('0.00');
     
-    Logger.log(`✅ 可存取 ${accessibleCount}/${employees.length} 個員工檔案`);
+    // 設置欄寬
+    overtimeSheet.setColumnWidth(1, 120); // ID
+    overtimeSheet.setColumnWidth(2, 150); // 開始時間
+    overtimeSheet.setColumnWidth(3, 150); // 結束時間
+    overtimeSheet.setColumnWidth(4, 80);  // 時數
+    overtimeSheet.setColumnWidth(5, 80);  // 倍率
     
+    return outputData.length;
   } catch (error) {
-    results.errors.push(`系統設定驗證失敗: ${error.message}`);
-    results.success = false;
-  }
-  
-  return results;
-}
-
-function runSystemTest() {
-  Logger.log('🧪 開始系統測試...');
-  
-  const validation = validateSystemSetup();
-  if (!validation.success) {
-    Logger.log('❌ 系統設定驗證失敗');
-    validation.errors.forEach(error => Logger.log(`ERROR: ${error}`));
-    return false;
-  }
-  
-  if (validation.warnings.length > 0) {
-    Logger.log('⚠️ 發現警告:');
-    validation.warnings.forEach(warning => Logger.log(`WARNING: ${warning}`));
-  }
-  
-  try {
-    Logger.log('📊 執行小規模測試...');
-    
-    const employees = getActiveEmployees().slice(0, 2);
-    
-    for (const employee of employees) {
-      const result = checkEmployeeData(employee.id, employee.fileId);
-      Logger.log(`✅ 員工 ${employee.id} 測試完成 - 新增 ${result.newRecords} 筆記錄`);
-    }
-    
-    Logger.log('🔍 測試反向驗證...');
-    const validationErrors = validateOvertimeRecords();
-    Logger.log(`✅ 反向驗證完成 - 發現 ${validationErrors} 個錯誤`);
-    
-    Logger.log('🔗 測試補休配對...');
-    const matchResult = matchLeaveWithOvertime();
-    Logger.log(`✅ 補休配對完成 - 配對 ${matchResult.matched} 筆，錯誤 ${matchResult.errors} 筆`);
-    
-    Logger.log('✅ 系統測試完成');
-    return true;
-    
-  } catch (error) {
-    Logger.log(`❌ 系統測試失敗: ${error.message}`);
-    return false;
-  }
-}
-
-function getSystemStatus() {
-  try {
-    const employees = getActiveEmployees();
-    const overtimeSheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_SUMMARY);
-    const leaveSheet = getMasterSheet(CONFIG.SHEETS.OVERTIME_DETAILS);
-    
-    const overtimeCount = overtimeSheet.getLastRow() - 1;
-    const leaveCount = leaveSheet.getLastRow() - 1;
-    
-    const unmatchedLeave = leaveSheet.getDataRange().getValues()
-      .slice(1)
-      .filter(row => !row[6] || row[6] === '').length;
-    
-    const status = {
-      employees: employees.length,
-      overtimeRecords: overtimeCount,
-      leaveRecords: leaveCount,
-      unmatchedLeave: unmatchedLeave,
-      lastUpdate: new Date()
-    };
-    
-    Logger.log('📊 系統狀態:');
-    Logger.log(`員工數: ${status.employees}`);
-    Logger.log(`加班記錄: ${status.overtimeRecords}`);
-    Logger.log(`補休記錄: ${status.leaveRecords}`);
-    Logger.log(`未配對補休: ${status.unmatchedLeave}`);
-    
-    return status;
-  } catch (error) {
-    Logger.log(`❌ 獲取系統狀態失敗: ${error.message}`);
-    return null;
+    throw new Error(`寫入員工試算表加班費紀錄失敗: ${error.message}`);
   }
 }
